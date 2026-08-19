@@ -38,9 +38,9 @@ grapes:
     type: bigquery_sql
     sql_file: sql/010_select_test.sql
     parameters:
-      batch_date:
+      business_date:
         type: DATE
-        value: "{{ dag_run.conf.get('batch_date', ds) }}"
+        value: "{{ ti.xcom_pull(task_ids='resolve_business_date') }}"
 
   - grape_id: call_test_procedure
     type: bigquery_procedure
@@ -49,6 +49,6 @@ grapes:
     depends_on:
       - run_select_sql
     parameters:
-      batch_date:
+      business_date:
         type: DATE
-        value: "{{ dag_run.conf.get('batch_date', ds) }}"
+        value: "{{ ti.xcom_pull(task_ids='resolve_business_date') }}"
