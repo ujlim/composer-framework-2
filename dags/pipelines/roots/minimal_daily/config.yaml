@@ -1,0 +1,31 @@
+version: 1
+
+root:
+  root_id: minimal_daily_root
+  description: Root DAG test - triggers one Vine
+  owner: framework-test
+  schedule: "0 2 * * *"
+  timezone: Asia/Seoul
+  start_date: "2026-01-01"
+  catchup: false
+  max_active_runs: 1
+  tags:
+    - test
+
+defaults:
+  wait_for_completion: true
+  poke_interval_seconds: 30
+  execution_timeout_seconds: 3600
+  reset_dag_run: false
+  deferrable: true
+
+vines:
+
+
+  - vine_id: minimal_bq_vine
+
+parameters:
+  batch_date:
+    value: "{{ dag_run.conf.get('batch_date', ds) }}"
+  recovery:
+    value: "{{ dag_run.conf.get('recovery', false) }}"

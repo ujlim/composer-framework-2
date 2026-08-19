@@ -1,0 +1,54 @@
+version: 1
+
+vine:
+  vine_id: minimal_bq_vine
+  description: Minimal SQL and Stored Procedure test Vine
+  owner: framework-test
+  schedule: null
+  timezone: Asia/Seoul
+  start_date: "2026-01-01"
+  max_active_runs: 1
+  dagrun_timeout_seconds: 3600
+  tags:
+    - test
+    - bigquery
+
+runtime:
+  # Change these values for your environment.
+  project_id: gcp-prod-edp-sa-ubi
+  location: asia-northeast3
+  gcp_conn_id: google_cloud_default
+  # Remove this field when impersonation is not used.
+  impersonation_chain: null
+  labels:
+    environment: test
+
+grape_defaults:
+  retries: 1
+  retry_delay_seconds: 60
+  execution_timeout_seconds: 1800
+  pool: default_pool
+  priority_weight: 1
+  deferrable: true
+  force_rerun: true
+  priority: INTERACTIVE
+
+grapes:
+  - grape_id: run_select_sql
+    type: bigquery_sql
+    sql_file: sql/010_select_test.sql
+    parameters:
+      batch_date:
+        type: DATE
+        value: "{{ dag_run.conf.get('batch_date', ds) }}"
+
+  - grape_id: call_test_procedure
+    type: bigquery_procedure
+    # Change to project.dataset.procedure or dataset.procedure.
+    procedure: gcp-prod-edp-sa-ubi.BDPL199.sp_framework_test
+    depends_on:
+      - run_select_sql
+    parameters:
+      batch_date:
+        type: DATE
+        value: "{{ dag_run.conf.get('batch_date', ds) }}"
