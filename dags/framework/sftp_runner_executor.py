@@ -4,8 +4,6 @@ import shlex
 from datetime import timedelta
 from typing import Any
 
-from airflow.providers.ssh.operators.ssh import SSHOperator
-
 from framework.logger import task_failure_callback, task_success_callback
 from framework.utils import merge_dicts, validate_airflow_id
 
@@ -24,7 +22,15 @@ class SftpRunnerExecutor:
         dag,
         grape: dict[str, Any],
         defaults: dict[str, Any],
-    ) -> SSHOperator:
+    ) -> Any:
+        try:
+            from airflow.providers.ssh.operators.ssh import SSHOperator
+        except ImportError as exc:
+            raise ImportError(
+                "gcs_to_sftp_runner requires apache-airflow-providers-ssh. "
+                "Install a Composer-compatible provider version before enabling this grape."
+            ) from exc
+
         grape_id = validate_airflow_id(grape.get("grape_id"), "grape.grape_id")
         if grape.get("type") != "gcs_to_sftp_runner":
             raise ValueError(f"Unsupported SFTP Runner grape type: {grape.get('type')}")
