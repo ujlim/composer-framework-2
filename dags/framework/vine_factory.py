@@ -31,6 +31,7 @@ class VineFactory:
 
         runtime = require_mapping(self.data.get("runtime", {}), "runtime")
         defaults = require_mapping(self.data.get("grape_defaults", {}), "grape_defaults")
+        business_date_policy = require_mapping(self.data.get("business_date", {}), "business_date")
         grapes = require_list(self.data.get("grapes"), "grapes")
         if not grapes:
             raise ValueError(f"Vine '{vine_id}' requires at least one grape")
@@ -66,7 +67,7 @@ class VineFactory:
                     type=["null", "string"],
                     format="date",
                     title="Business Date",
-                    description="Vine 직접 Manual 실행 시 필수 입력. Root에서 호출되면 Root의 business_date를 상속합니다.",
+                    description="Vine 직접 Manual 실행 시 필수 입력. Root에서 호출되면 Root의 business context를 상속합니다.",
                 )
             },
             on_success_callback=dag_success_callback,
@@ -78,6 +79,9 @@ class VineFactory:
         resolve_business_date = PythonOperator(
             task_id="resolve_business_date",
             python_callable=resolve_vine_business_date,
+            op_kwargs={
+                "period_type": business_date_policy.get("type", "daily"),
+            },
             on_success_callback=task_success_callback,
             on_failure_callback=task_failure_callback,
             dag=dag,
