@@ -1,20 +1,18 @@
 version: 1
 
 vine:
-  vine_id: minimal_bq_vine
-  description: Minimal SQL and Stored Procedure test Vine
+  vine_id: sample_business_monthly_vine
+  description: Sample Monthly business context Vine
   owner: framework-test
   schedule: null
   timezone: Asia/Seoul
   start_date: "2026-01-01"
   max_active_runs: 1
   dagrun_timeout_seconds: 3600
-  tags:
-    - test
-    - bigquery
+  tags: [sample, test, business-date, monthly, bigquery]
 
 business_date:
-  type: daily
+  type: monthly
 
 runtime:
   project_id: gcp-prod-edp-sa-ubi
@@ -23,10 +21,10 @@ runtime:
   impersonation_chain: null
   labels:
     environment: test
+    sample: business_date_monthly
 
 grape_defaults:
-  retries: 1
-  retry_delay_seconds: 60
+  retries: 0
   execution_timeout_seconds: 1800
   pool: default_pool
   priority_weight: 1
@@ -35,20 +33,19 @@ grape_defaults:
   priority: INTERACTIVE
 
 grapes:
-  - grape_id: run_select_sql
+  - grape_id: show_business_context
     type: bigquery_sql
-    sql_file: sql/010_select_test.sql
+    sql_file: sql/show_business_context.sql
     parameters:
       business_date:
         type: DATE
         value: "{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}"
-
-  - grape_id: call_test_procedure
-    type: bigquery_procedure
-    procedure: gcp-prod-edp-sa-ubi.BDPL199.sp_framework_test
-    depends_on:
-      - run_select_sql
-    parameters:
-      business_date:
+      period_start:
         type: DATE
-        value: "{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}"
+        value: "{{ ti.xcom_pull(task_ids='resolve_business_date')['period_start'] }}"
+      period_end:
+        type: DATE
+        value: "{{ ti.xcom_pull(task_ids='resolve_business_date')['period_end'] }}"
+      period_type:
+        type: STRING
+        value: "{{ ti.xcom_pull(task_ids='resolve_business_date')['period_type'] }}"
