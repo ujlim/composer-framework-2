@@ -4,7 +4,12 @@ from datetime import date
 from typing import Any
 
 import pendulum
-from airflow.operators.python import get_current_context
+
+try:
+    # Airflow 3.x public SDK
+    from airflow.sdk import get_current_context
+except ImportError:  # Airflow 2.x / Composer 3 with Airflow 2.11
+    from airflow.operators.python import get_current_context
 
 
 def _normalize_business_date(value: Any) -> str | None:
