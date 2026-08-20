@@ -11,8 +11,10 @@ from airflow.providers.standard.operators.python import PythonOperator
 
 from framework.bigquery_executor import BigQueryExecutor
 from framework.business_date import resolve_vine_business_date
+from framework.gcs_executor import GCSExecutor
 from framework.logger import dag_failure_callback, dag_success_callback, task_failure_callback, task_success_callback
 from framework.models import LoadedConfig
+from framework.sftp_runner_executor import SftpRunnerExecutor
 from framework.utils import require_list, require_mapping, validate_airflow_id, validate_dependency_graph
 
 
@@ -97,6 +99,19 @@ class VineFactory:
                     vine_config=self.config,
                     grape=grape,
                     runtime=runtime,
+                    defaults=defaults,
+                )
+            elif grape_type == "gcs_move_prefix":
+                task = GCSExecutor.create_task(
+                    dag=dag,
+                    grape=grape,
+                    runtime=runtime,
+                    defaults=defaults,
+                )
+            elif grape_type == "gcs_to_sftp_runner":
+                task = SftpRunnerExecutor.create_task(
+                    dag=dag,
+                    grape=grape,
                     defaults=defaults,
                 )
             else:
