@@ -15,6 +15,7 @@ root:
 # Scheduled run business-date policy.
 # Example: 2026-08-19 02:00 run -> business_date=2026-08-18
 business_date:
+  type: daily
   source: data_interval_end
   offset_days: -1
   timezone: Asia/Seoul
@@ -29,7 +30,7 @@ defaults:
 vines:
   - vine_id: minimal_bq_vine
 
-# business_date is framework-managed and is automatically passed to Vine DAGs.
+# business context is framework-managed and automatically passed to Vine DAGs.
 parameters:
   recovery:
     value: "{{ dag_run.conf.get('recovery', false) }}"
