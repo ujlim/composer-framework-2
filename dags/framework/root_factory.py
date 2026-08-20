@@ -71,7 +71,7 @@ class RootFactory:
                     type=["null", "string"],
                     format="date",
                     title="Business Date",
-                    description="Manual 실행 시 필수 입력. 처리할 업무 기준일 (YYYY-MM-DD). Scheduled 실행 시 Root 정책으로 자동 계산됩니다.",
+                    description="Manual 실행 시 필수 입력. Daily/Monthly/Yearly 업무 기준일 (YYYY-MM-DD). Scheduled 실행 시 Root 정책으로 자동 계산됩니다.",
                 )
             },
             on_success_callback=dag_success_callback,
@@ -84,6 +84,7 @@ class RootFactory:
             task_id="resolve_business_date",
             python_callable=resolve_root_business_date,
             op_kwargs={
+                "period_type": business_date_policy.get("type", "daily"),
                 "timezone": business_date_policy.get("timezone", timezone),
                 "source": business_date_policy.get("source", "data_interval_end"),
                 "offset_days": int(business_date_policy.get("offset_days", -1)),
@@ -98,7 +99,15 @@ class RootFactory:
             name: (spec.get("value") if isinstance(spec, dict) else spec)
             for name, spec in parameters.items()
         }
-        conf["business_date"] = "{{ ti.xcom_pull(task_ids='resolve_business_date') }}"
+        context_task = "ti.xcom_pull(task_ids='resolve_business_date')"
+        conf.update(
+            {
+                "business_date": "{{ " + context_task + "['business_date'] }}",
+                "period_type": "{{ " + context_task + "['period_type'] }}",
+                "period_start": "{{ " + context_task + "['period_start'] }}",
+                "period_end": "{{ " + context_task + "['period_end'] }}",
+            }
+        )
 
         task_map = {}
         for item in vines:
