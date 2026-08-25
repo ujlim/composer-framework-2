@@ -2,17 +2,32 @@ version: 1
 
 vine:
   vine_id: sample_business_monthly_vine
-  description: Sample Monthly business context Vine
+  description: Sample Monthly business context and date offsets Vine
   owner: framework-test
   schedule: null
   timezone: Asia/Seoul
   start_date: "2026-01-01"
   max_active_runs: 1
   dagrun_timeout_seconds: 3600
-  tags: [sample, test, business-date, monthly, bigquery]
+  tags: [sample, test, business-date, monthly, date-offsets, bigquery]
 
 business_date:
   type: monthly
+  date_offsets:
+    previous_month_end:
+      months: -1
+      adjust: month_end
+    previous_year_month_end:
+      months: -12
+      adjust: month_end
+    two_years_ago_month_end:
+      months: -24
+      adjust: month_end
+    current_month_start:
+      adjust: month_start
+    previous_year_end:
+      years: -1
+      adjust: year_end
 
 runtime:
   project_id: gcp-prod-edp-sa-ubi
@@ -49,3 +64,18 @@ grapes:
       period_type:
         type: STRING
         value: "{{ ti.xcom_pull(task_ids='resolve_business_date')['period_type'] }}"
+      previous_month_end:
+        type: DATE
+        value: "{{ ti.xcom_pull(task_ids='resolve_business_date')['previous_month_end'] }}"
+      previous_year_month_end:
+        type: DATE
+        value: "{{ ti.xcom_pull(task_ids='resolve_business_date')['previous_year_month_end'] }}"
+      two_years_ago_month_end:
+        type: DATE
+        value: "{{ ti.xcom_pull(task_ids='resolve_business_date')['two_years_ago_month_end'] }}"
+      current_month_start:
+        type: DATE
+        value: "{{ ti.xcom_pull(task_ids='resolve_business_date')['current_month_start'] }}"
+      previous_year_end:
+        type: DATE
+        value: "{{ ti.xcom_pull(task_ids='resolve_business_date')['previous_year_end'] }}"
