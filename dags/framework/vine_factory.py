@@ -11,6 +11,7 @@ from airflow.providers.standard.operators.python import PythonOperator
 
 from framework.bigquery_executor import BigQueryExecutor
 from framework.business_date import resolve_vine_business_date
+from framework.fin_file_sensor_executor import FinFileSensorExecutor
 from framework.gcs_executor import GCSExecutor
 from framework.logger import dag_failure_callback, dag_success_callback, task_failure_callback, task_success_callback
 from framework.models import LoadedConfig
@@ -112,6 +113,13 @@ class VineFactory:
                 task = SftpRunnerExecutor.create_task(
                     dag=dag,
                     grape=grape,
+                    defaults=defaults,
+                )
+            elif grape_type == "gcs_fin_file_sensor":
+                task = FinFileSensorExecutor.create_task(
+                    dag=dag,
+                    grape=grape,
+                    runtime=runtime,
                     defaults=defaults,
                 )
             else:
