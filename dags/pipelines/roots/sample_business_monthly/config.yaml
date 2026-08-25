@@ -9,13 +9,28 @@ root:
   start_date: "2026-01-01"
   catchup: false
   max_active_runs: 1
-  tags: [sample, test, business-date, monthly]
+  tags: [sample, test, business-date, monthly, date-offsets]
 
 business_date:
   type: monthly
   source: data_interval_end
   offset_days: -1
   timezone: Asia/Seoul
+  date_offsets:
+    previous_month_end:
+      months: -1
+      adjust: month_end
+    previous_year_month_end:
+      months: -12
+      adjust: month_end
+    two_years_ago_month_end:
+      months: -24
+      adjust: month_end
+    current_month_start:
+      adjust: month_start
+    previous_year_end:
+      years: -1
+      adjust: year_end
 
 defaults:
   wait_for_completion: true
