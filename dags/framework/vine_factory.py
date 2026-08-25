@@ -35,6 +35,7 @@ class VineFactory:
         runtime = require_mapping(self.data.get("runtime", {}), "runtime")
         defaults = require_mapping(self.data.get("grape_defaults", {}), "grape_defaults")
         business_date_policy = require_mapping(self.data.get("business_date", {}), "business_date")
+        date_offsets = require_mapping(business_date_policy.get("date_offsets", {}), "business_date.date_offsets")
         grapes = require_list(self.data.get("grapes"), "grapes")
         if not grapes:
             raise ValueError(f"Vine '{vine_id}' requires at least one grape")
@@ -84,6 +85,7 @@ class VineFactory:
             python_callable=resolve_vine_business_date,
             op_kwargs={
                 "period_type": business_date_policy.get("type", "daily"),
+                "date_offsets": date_offsets,
             },
             on_success_callback=task_success_callback,
             on_failure_callback=task_failure_callback,
@@ -103,25 +105,11 @@ class VineFactory:
                     defaults=defaults,
                 )
             elif grape_type == "gcs_move_prefix":
-                task = GCSExecutor.create_task(
-                    dag=dag,
-                    grape=grape,
-                    runtime=runtime,
-                    defaults=defaults,
-                )
+                task = GCSExecutor.create_task(dag=dag, grape=grape, runtime=runtime, defaults=defaults)
             elif grape_type == "gcs_to_sftp_runner":
-                task = SftpRunnerExecutor.create_task(
-                    dag=dag,
-                    grape=grape,
-                    defaults=defaults,
-                )
+                task = SftpRunnerExecutor.create_task(dag=dag, grape=grape, defaults=defaults)
             elif grape_type == "gcs_fin_file_sensor":
-                task = FinFileSensorExecutor.create_task(
-                    dag=dag,
-                    grape=grape,
-                    runtime=runtime,
-                    defaults=defaults,
-                )
+                task = FinFileSensorExecutor.create_task(dag=dag, grape=grape, runtime=runtime, defaults=defaults)
             else:
                 raise ValueError(
                     f"Vine '{vine_id}' grape '{grape.get('grape_id')}' has unsupported type '{grape_type}'"
