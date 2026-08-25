@@ -33,6 +33,7 @@ class RootFactory:
         defaults = require_mapping(self.data.get("defaults", {}), "defaults")
         parameters = require_mapping(self.data.get("parameters", {}), "parameters")
         business_date_policy = require_mapping(self.data.get("business_date", {}), "business_date")
+        date_offsets = require_mapping(business_date_policy.get("date_offsets", {}), "business_date.date_offsets")
 
         vine_ids: list[str] = []
         dependencies: dict[str, list[str]] = {}
@@ -88,6 +89,7 @@ class RootFactory:
                 "timezone": business_date_policy.get("timezone", timezone),
                 "source": business_date_policy.get("source", "data_interval_end"),
                 "offset_days": int(business_date_policy.get("offset_days", -1)),
+                "date_offsets": date_offsets,
             },
             on_success_callback=task_success_callback,
             on_failure_callback=task_failure_callback,
@@ -108,6 +110,10 @@ class RootFactory:
                 "period_end": "{{ " + context_task + "['period_end'] }}",
             }
         )
+        for offset_name in date_offsets:
+            if offset_name in conf:
+                raise ValueError(f"date_offsets key '{offset_name}' conflicts with Root parameter")
+            conf[offset_name] = "{{ " + context_task + "['" + offset_name + "'] }}"
 
         task_map = {}
         for item in vines:
