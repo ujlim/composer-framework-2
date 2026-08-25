@@ -1,0 +1,40 @@
+version: 1
+
+vine:
+  vine_id: vine_fin_downstream_02
+  description: Second downstream Vine started after FIN file detection
+  owner: framework-test
+  schedule: null
+  timezone: Asia/Seoul
+  start_date: "2026-01-01"
+  max_active_runs: 1
+  dagrun_timeout_seconds: 3600
+  tags: [sample, test, fin-file, downstream]
+
+business_date:
+  type: daily
+
+runtime:
+  project_id: gcp-prod-edp-sa-ubi
+  location: asia-northeast3
+  gcp_conn_id: google_cloud_default
+  impersonation_chain: null
+  labels:
+    sample: fin_sensor
+
+grape_defaults:
+  retries: 1
+  retry_delay_seconds: 60
+  execution_timeout_seconds: 1800
+  deferrable: true
+  force_rerun: true
+  priority: INTERACTIVE
+
+grapes:
+  - grape_id: downstream_02_sql
+    type: bigquery_sql
+    sql_file: sql/run.sql
+    parameters:
+      business_date:
+        type: DATE
+        value: "{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}"
