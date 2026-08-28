@@ -14,6 +14,109 @@ def _normalize_prefix(value: str) -> str:
     return str(value or "").lstrip("/")
 
 
+def _require_gcs_name(value: Any, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} is required")
+    return value.strip()
+
+
+def copy_gcs_object(
+    *,
+    source_bucket: str,
+    source_object: str,
+    destination_bucket: str,
+    destination_object: str,
+    overwrite: bool = False,
+    gcp_conn_id: str = "google_cloud_default",
+    impersonation_chain: str | list[str] | None = None,
+) -> dict[str, Any]:
+    """Copy one GCS object and verify size/CRC32C after the copy."""
+    source_bucket = _require_gcs_name(source_bucket, "source_bucket")
+    source_object = _require_gcs_name(source_object, "source_object").lstrip("/")
+    destination_bucket = _require_gcs_name(destination_bucket, "destination_bucket")
+    destination_object = _require_gcs_name(destination_object, "destination_object").lstrip("/")
+
+    hook = GCSHook(
+        gcp_conn_id=gcp_conn_id,
+        impersonation_chain=impersonation_chain,
+    )
+    client = hook.get_conn()
+    source_bucket_obj = client.bucket(source_bucket)
+    destination_bucket_obj = client.bucket(destination_bucket)
+
+    source_blob = source_bucket_obj.get_blob(source_object)
+    if source_blob is None:
+        raise FileNotFoundError(f"Source object does not exist: gs://{source_bucket}/{source_object}")
+
+    destination_blob = destination_bucket_obj.blob(destination_object)
+    if destination_blob.exists() and not overwrite:
+        raise FileExistsError(
+            f"Destination already exists: gs://{destination_bucket}/{destination_object}. "
+            "Set overwrite=true only when replacement is intended."
+        )
+
+    hook.copy(
+        source_bucket=source_bucket,
+        source_object=source_object,
+        destination_bucket=destination_bucket,
+        destination_object=destination_object,
+    )
+
+    destination_blob = destination_bucket_obj.get_blob(destination_object)
+    if destination_blob is None:
+        raise RuntimeError(
+            f"Copy verification failed: gs://{destination_bucket}/{destination_object} was not found"
+        )
+    if source_blob.size != destination_blob.size or source_blob.crc32c != destination_blob.crc32c:
+        raise RuntimeError(
+            "Copy verification mismatch: "
+            f"gs://{source_bucket}/{source_object} -> "
+            f"gs://{destination_bucket}/{destination_object}"
+        )
+
+    return {
+        "source": f"gs://{source_bucket}/{source_object}",
+        "destination": f"gs://{destination_bucket}/{destination_object}",
+        "size": destination_blob.size,
+        "crc32c": destination_blob.crc32c,
+    }
+
+
+def delete_gcs_object(
+    *,
+    bucket: str,
+    object_name: str,
+    ignore_if_missing: bool = False,
+    gcp_conn_id: str = "google_cloud_default",
+    impersonation_chain: str | list[str] | None = None,
+) -> dict[str, Any]:
+    """Delete exactly one GCS object."""
+    bucket = _require_gcs_name(bucket, "bucket")
+    object_name = _require_gcs_name(object_name, "object_name").lstrip("/")
+
+    hook = GCSHook(
+        gcp_conn_id=gcp_conn_id,
+        impersonation_chain=impersonation_chain,
+    )
+    client = hook.get_conn()
+    blob = client.bucket(bucket).get_blob(object_name)
+
+    if blob is None:
+        if ignore_if_missing:
+            return {
+                "object": f"gs://{bucket}/{object_name}",
+                "deleted": False,
+                "reason": "not_found",
+            }
+        raise FileNotFoundError(f"GCS object does not exist: gs://{bucket}/{object_name}")
+
+    hook.delete(bucket_name=bucket, object_name=object_name)
+    return {
+        "object": f"gs://{bucket}/{object_name}",
+        "deleted": True,
+    }
+
+
 def move_gcs_prefix(
     *,
     source_bucket: str,
@@ -98,7 +201,7 @@ def move_gcs_prefix(
 
 
 class GCSExecutor:
-    """Build GCS transfer Grapes for Vine DAGs."""
+    """Build GCS object/prefix Grapes for Vine DAGs."""
 
     @classmethod
     def create_task(
@@ -110,19 +213,47 @@ class GCSExecutor:
         defaults: dict[str, Any],
     ) -> PythonOperator:
         grape_id = validate_airflow_id(grape.get("grape_id"), "grape.grape_id")
-        if grape.get("type") != "gcs_move_prefix":
-            raise ValueError(f"Unsupported GCS grape type: {grape.get('type')}")
+        grape_type = grape.get("type")
+        if grape_type not in {"gcs_copy_object", "gcs_delete_object", "gcs_move_prefix"}:
+            raise ValueError(f"Unsupported GCS grape type: {grape_type}")
 
         options = merge_dicts(defaults, grape.get("options", {}))
         source = grape.get("source") or {}
-        destination = grape.get("destination") or {}
-        if not isinstance(source, dict) or not isinstance(destination, dict):
-            raise ValueError(f"{grape_id}: source and destination must be mappings")
+        if not isinstance(source, dict):
+            raise ValueError(f"{grape_id}: source must be a mapping")
 
-        return PythonOperator(
-            task_id=grape_id,
-            python_callable=move_gcs_prefix,
-            op_kwargs={
+        common = {
+            "gcp_conn_id": runtime.get("gcp_conn_id", "google_cloud_default"),
+            "impersonation_chain": runtime.get("impersonation_chain"),
+        }
+
+        if grape_type == "gcs_copy_object":
+            destination = grape.get("destination") or {}
+            if not isinstance(destination, dict):
+                raise ValueError(f"{grape_id}: destination must be a mapping")
+            python_callable = copy_gcs_object
+            op_kwargs = {
+                "source_bucket": source.get("bucket"),
+                "source_object": source.get("object"),
+                "destination_bucket": destination.get("bucket"),
+                "destination_object": destination.get("object"),
+                "overwrite": bool(options.get("overwrite", False)),
+                **common,
+            }
+        elif grape_type == "gcs_delete_object":
+            python_callable = delete_gcs_object
+            op_kwargs = {
+                "bucket": source.get("bucket"),
+                "object_name": source.get("object"),
+                "ignore_if_missing": bool(options.get("ignore_if_missing", False)),
+                **common,
+            }
+        else:
+            destination = grape.get("destination") or {}
+            if not isinstance(destination, dict):
+                raise ValueError(f"{grape_id}: destination must be a mapping")
+            python_callable = move_gcs_prefix
+            op_kwargs = {
                 "source_bucket": source.get("bucket"),
                 "source_prefix": source.get("prefix"),
                 "destination_bucket": destination.get("bucket"),
@@ -131,9 +262,13 @@ class GCSExecutor:
                 "allow_empty": bool(options.get("allow_empty", False)),
                 "overwrite": bool(options.get("overwrite", False)),
                 "preserve_relative_path": bool(options.get("preserve_relative_path", True)),
-                "gcp_conn_id": runtime.get("gcp_conn_id", "google_cloud_default"),
-                "impersonation_chain": runtime.get("impersonation_chain"),
-            },
+                **common,
+            }
+
+        return PythonOperator(
+            task_id=grape_id,
+            python_callable=python_callable,
+            op_kwargs=op_kwargs,
             retries=int(options.get("retries", 1)),
             retry_delay=timedelta(seconds=int(options.get("retry_delay_seconds", 300))),
             execution_timeout=timedelta(seconds=int(options.get("execution_timeout_seconds", 7200))),
