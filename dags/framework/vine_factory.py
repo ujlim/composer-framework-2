@@ -104,7 +104,7 @@ class VineFactory:
                     runtime=runtime,
                     defaults=defaults,
                 )
-            elif grape_type == "gcs_move_prefix":
+            elif grape_type in {"gcs_copy_object", "gcs_delete_object", "gcs_move_prefix"}:
                 task = GCSExecutor.create_task(dag=dag, grape=grape, runtime=runtime, defaults=defaults)
             elif grape_type == "gcs_to_sftp_runner":
                 task = SftpRunnerExecutor.create_task(dag=dag, grape=grape, defaults=defaults)
