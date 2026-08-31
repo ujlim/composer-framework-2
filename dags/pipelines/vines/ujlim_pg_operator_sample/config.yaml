@@ -1,0 +1,44 @@
+version: 1
+
+vine:
+  vine_id: ujlim_pg_operator_sample
+  description: Sample Vine for Cloud SQL PostgreSQL SQL execution with KMS-encrypted credentials
+  owner: framework-test
+  schedule: null
+  timezone: Asia/Seoul
+  start_date: "2026-01-01"
+  max_active_runs: 1
+  dagrun_timeout_seconds: 3600
+  tags: [sample, test, postgres, cloudsql, kms]
+
+business_date:
+  type: daily
+
+runtime:
+  gcp_conn_id: google_cloud_default
+  impersonation_chain: null
+
+grape_defaults:
+  retries: 1
+  retry_delay_seconds: 60
+  execution_timeout_seconds: 1800
+  connect_timeout_seconds: 30
+  pool: default_pool
+  priority_weight: 1
+
+grapes:
+  - grape_id: query_postgres
+    type: postgres_sql
+    sql_file: sql/010_query_business_date.sql
+    connection:
+      # Full CryptoKey resource name, not a key version.
+      kms_key_name: projects/REPLACE_PROJECT/locations/asia-northeast3/keyRings/REPLACE_KEYRING/cryptoKeys/REPLACE_KEY
+      # Base64 text of the binary ciphertext produced by `gcloud kms encrypt`.
+      # Never put plaintext host/user/password values in this YAML.
+      encrypted_credentials: REPLACE_WITH_BASE64_KMS_CIPHERTEXT
+    parameters:
+      business_date: "{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}"
+    options:
+      autocommit: false
+      fetch: all
+      max_fetch_rows: 10

@@ -15,6 +15,7 @@ from framework.fin_file_sensor_executor import FinFileSensorExecutor
 from framework.gcs_executor import GCSExecutor
 from framework.logger import dag_failure_callback, dag_success_callback, task_failure_callback, task_success_callback
 from framework.models import LoadedConfig
+from framework.postgres_executor import PostgresExecutor
 from framework.sftp_runner_executor import SftpRunnerExecutor
 from framework.utils import require_list, require_mapping, validate_airflow_id, validate_dependency_graph
 
@@ -106,6 +107,14 @@ class VineFactory:
                 )
             elif grape_type in {"gcs_copy_object", "gcs_delete_object", "gcs_move_prefix"}:
                 task = GCSExecutor.create_task(dag=dag, grape=grape, runtime=runtime, defaults=defaults)
+            elif grape_type == "postgres_sql":
+                task = PostgresExecutor.create_task(
+                    dag=dag,
+                    vine_config=self.config,
+                    grape=grape,
+                    runtime=runtime,
+                    defaults=defaults,
+                )
             elif grape_type == "gcs_to_sftp_runner":
                 task = SftpRunnerExecutor.create_task(dag=dag, grape=grape, defaults=defaults)
             elif grape_type == "gcs_fin_file_sensor":
