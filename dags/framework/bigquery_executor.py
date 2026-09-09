@@ -1,3 +1,6 @@
+# Author: LIM UI JIN
+# Created: 2026-09-09
+
 from __future__ import annotations
 
 import re
@@ -129,8 +132,6 @@ class BigQueryExecutor:
                 raise ValueError(f"Parameter '{name}' requires value")
 
             value = spec["value"]
-            # configuration is templated by BigQueryInsertJobOperator, so Jinja values
-            # such as {{ dag_run.conf.get('batch_date', ds) }} are resolved at runtime.
             if isinstance(value, bool):
                 encoded_value: Any = "true" if value else "false"
             elif value is None:
@@ -147,7 +148,6 @@ class BigQueryExecutor:
 
     @staticmethod
     def _validate_object_name(value: str, name: str) -> None:
-        # Minimal protection for project.dataset.routine identifiers.
         parts = value.split(".")
         if len(parts) not in {2, 3} or any(not part.strip() for part in parts):
             raise ValueError(
