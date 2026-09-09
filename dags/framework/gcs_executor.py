@@ -1,3 +1,6 @@
+# Author: LIM UI JIN
+# Created: 2026-09-09
+
 from __future__ import annotations
 
 from datetime import timedelta
@@ -186,7 +189,6 @@ def move_gcs_prefix(
 
     deleted_count = 0
     if delete_source:
-        # Deletion is deliberately a second phase. A partial copy failure never deletes source data.
         for source_object, _ in copied:
             hook.delete(bucket_name=source_bucket, object_name=source_object)
             deleted_count += 1
