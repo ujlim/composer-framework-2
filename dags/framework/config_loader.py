@@ -1,3 +1,6 @@
+# Author: LIM UI JIN
+# Created: 2026-09-09
+
 from __future__ import annotations
 
 import logging
