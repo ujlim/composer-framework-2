@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Author: LIM UI JIN
+# Created: 2026-09-09
+
 from __future__ import annotations
 
 import argparse
