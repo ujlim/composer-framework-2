@@ -11,14 +11,18 @@ import os
 import posixpath
 import tempfile
 from pathlib import Path
+from typing import Any
 
+import google.auth
 import paramiko
+from google.auth import impersonated_credentials
 from google.cloud import secretmanager, storage
 
 CONFIG_PATH = Path(os.environ.get("SFTP_RUNNER_CONFIG", "/engn/sftp-runner/conf/targets.json"))
 DEFAULT_KNOWN_HOSTS = "/engn/sftp-runner/conf/known_hosts"
 DEFAULT_TEMP_DIR = "/data/sftp-runner/tmp"
 DEFAULT_LOG_DIR = "/logs/sftp-runner"
+CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 
 
 def load_config() -> dict:
@@ -40,6 +44,35 @@ def setup_logging(config: dict) -> None:
     )
 
 
+def build_google_credentials(config: dict) -> tuple[Any, str | None]:
+    """Build ADC or VM-SA -> Runner-SA impersonated credentials for GCP APIs."""
+    runner = config.get("runner") or {}
+    source_credentials, detected_project_id = google.auth.default(
+        scopes=[CLOUD_PLATFORM_SCOPE]
+    )
+    project_id = runner.get("project_id") or detected_project_id
+    target_principal = runner.get("service_account")
+
+    if not target_principal:
+        logging.warning(
+            "runner.service_account is not configured; using VM/Application Default Credentials directly"
+        )
+        return source_credentials, project_id
+
+    lifetime = int(runner.get("impersonation_lifetime_seconds", 3600))
+    if lifetime < 300 or lifetime > 3600:
+        raise ValueError("runner.impersonation_lifetime_seconds must be between 300 and 3600")
+
+    credentials = impersonated_credentials.Credentials(
+        source_credentials=source_credentials,
+        target_principal=str(target_principal),
+        target_scopes=[CLOUD_PLATFORM_SCOPE],
+        lifetime=lifetime,
+    )
+    logging.info("Using impersonated Google service account: %s", target_principal)
+    return credentials, project_id
+
+
 def load_target(config: dict, name: str) -> dict:
     target = (config.get("targets") or {}).get(name)
     if not isinstance(target, dict):
@@ -50,8 +83,8 @@ def load_target(config: dict, name: str) -> dict:
     return target
 
 
-def access_secret(project_id: str, secret_id: str) -> str:
-    client = secretmanager.SecretManagerServiceClient()
+def access_secret(project_id: str, secret_id: str, credentials: Any) -> str:
+    client = secretmanager.SecretManagerServiceClient(credentials=credentials)
     name = f"projects/{project_id}/secrets/{secret_id}/versions/latest"
     response = client.access_secret_version(request={"name": name})
     return response.payload.data.decode("utf-8")
@@ -67,7 +100,11 @@ def mkdir_p(sftp: paramiko.SFTPClient, remote_dir: str) -> None:
             sftp.mkdir(current)
 
 
-def connect(config: dict, target: dict) -> tuple[paramiko.SSHClient, paramiko.SFTPClient]:
+def connect(
+    config: dict,
+    target: dict,
+    google_credentials: Any,
+) -> tuple[paramiko.SSHClient, paramiko.SFTPClient]:
     runner = config.get("runner") or {}
     known_hosts = runner.get("known_hosts", DEFAULT_KNOWN_HOSTS)
     auth_type = str(target.get("auth_type", "password")).lower()
@@ -92,7 +129,9 @@ def connect(config: dict, target: dict) -> tuple[paramiko.SSHClient, paramiko.SF
         project_id = target.get("secret_project_id") or runner.get("project_id")
         if not secret_id or not project_id:
             raise ValueError("password auth requires password_secret and secret project_id")
-        kwargs["password"] = access_secret(project_id, secret_id)
+        kwargs["password"] = access_secret(
+            str(project_id), str(secret_id), google_credentials
+        )
     elif auth_type == "private_key":
         key_file = target.get("key_file")
         if not key_file:
@@ -122,21 +161,30 @@ def main() -> int:
     temp_dir = Path(runner.get("temp_dir", DEFAULT_TEMP_DIR))
     temp_dir.mkdir(parents=True, exist_ok=True)
 
+    google_credentials, project_id = build_google_credentials(config)
+
     prefix = args.prefix.lstrip("/")
     if not prefix:
         raise ValueError("--prefix must not be empty; refusing a whole-bucket transfer")
 
     target = load_target(config, args.target)
-    storage_client = storage.Client()
+    storage_client = storage.Client(
+        project=project_id,
+        credentials=google_credentials,
+    )
     bucket = storage_client.bucket(args.bucket)
-    blobs = [b for b in storage_client.list_blobs(args.bucket, prefix=prefix) if not b.name.endswith("/")]
+    blobs = [
+        blob
+        for blob in storage_client.list_blobs(args.bucket, prefix=prefix)
+        if not blob.name.endswith("/")
+    ]
     if not blobs:
         if args.allow_empty:
             logging.info("No objects found under gs://%s/%s", args.bucket, prefix)
             return 0
         raise FileNotFoundError(f"No objects found under gs://{args.bucket}/{prefix}")
 
-    ssh, sftp = connect(config, target)
+    ssh, sftp = connect(config, target, google_credentials)
     uploaded: list[str] = []
     try:
         for blob in blobs:
@@ -153,17 +201,28 @@ def main() -> int:
                 else:
                     raise FileExistsError(f"Remote file already exists: {remote_path}")
 
-            with tempfile.NamedTemporaryFile(prefix="sftp-runner-", dir=temp_dir, delete=True) as tmp:
+            with tempfile.NamedTemporaryFile(
+                prefix="sftp-runner-",
+                dir=temp_dir,
+                delete=True,
+            ) as tmp:
                 blob.download_to_filename(tmp.name)
                 local_size = os.path.getsize(tmp.name)
                 sftp.put(tmp.name, remote_path, confirm=True)
                 remote_size = sftp.stat(remote_path).st_size
                 if remote_size != local_size:
                     raise RuntimeError(
-                        f"SFTP size verification failed for {blob.name}: local={local_size}, remote={remote_size}"
+                        f"SFTP size verification failed for {blob.name}: "
+                        f"local={local_size}, remote={remote_size}"
                     )
             uploaded.append(blob.name)
-            logging.info("Uploaded gs://%s/%s -> %s:%s", args.bucket, blob.name, args.target, remote_path)
+            logging.info(
+                "Uploaded gs://%s/%s -> %s:%s",
+                args.bucket,
+                blob.name,
+                args.target,
+                remote_path,
+            )
 
         deleted_count = 0
         if args.delete_source:
@@ -173,7 +232,11 @@ def main() -> int:
 
         logging.info(
             "Transfer complete target=%s bucket=%s prefix=%s uploaded=%d deleted=%d",
-            args.target, args.bucket, prefix, len(uploaded), deleted_count,
+            args.target,
+            args.bucket,
+            prefix,
+            len(uploaded),
+            deleted_count,
         )
         return 0
     finally:
