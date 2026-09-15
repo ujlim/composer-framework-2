@@ -32,7 +32,8 @@ grapes:
       ssh_conn_id: conn-sftp-runner-1
     source:
       bucket: bucket-prod-sa-ubi-outbound-test-1
-      prefix: "outbound/{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}/"
+      # RootFactory passes business_date to the triggered Vine through dag_run.conf.
+      prefix: "outbound/{{ dag_run.conf.get('business_date') }}/"
     destination:
       target: gcp-sftp-test-1
       remote_dir: /upload
