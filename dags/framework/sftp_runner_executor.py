@@ -1,5 +1,5 @@
 # Author: LIM UI JIN
-# Created: 2026-09-09
+# Created: 2026-09-15
 
 from __future__ import annotations
 
@@ -50,23 +50,34 @@ class SftpRunnerExecutor:
                 "destination.target and destination.remote_dir are required"
             )
 
-        runner_command = runner.get(
-            "command",
-            "/engn/sftp-runner/venv/bin/python /engn/sftp-runner/app/gcs_to_sftp.py",
-        )
-        command = " ".join([
-            str(runner_command),
-            "--target", _arg(target),
-            "--bucket", _arg(bucket),
-            "--prefix", _arg(prefix),
-            "--remote-dir", _arg(remote_dir),
-        ])
+        runner_command = runner.get("command", "/engn/sftp-runner/venv/bin/python /engn/sftp-runner/app/gcs_to_sftp.py")
+        command = " ".join([str(runner_command), "--target", _arg(target), "--bucket", _arg(bucket), "--prefix", _arg(prefix), "--remote-dir", _arg(remote_dir)])
         if bool(options.get("allow_empty", False)):
             command += " --allow-empty"
         if bool(options.get("delete_source", False)):
             command += " --delete-source"
         if bool(options.get("overwrite", False)):
             command += " --overwrite"
+
+        merge = options.get("merge") or {}
+        if bool(merge.get("enabled", False)):
+            filename = destination.get("filename") or merge.get("filename")
+            if not isinstance(filename, str) or not filename.strip():
+                raise ValueError(f"{grape_id}: merge enabled requires destination.filename")
+            command += " --merge-filename " + _arg(filename)
+            if bool(merge.get("header", True)):
+                command += " --csv-header"
+
+            verification = options.get("verification") or {}
+            if verification and not bool(verification.get("row_count", True)):
+                raise ValueError(f"{grape_id}: merged CSV currently requires row_count verification")
+
+            fin = options.get("fin") or {}
+            if bool(fin.get("enabled", False)):
+                fin_filename = fin.get("filename")
+                if not isinstance(fin_filename, str) or not fin_filename.strip():
+                    raise ValueError(f"{grape_id}: fin enabled requires options.fin.filename")
+                command += " --fin-filename " + _arg(fin_filename)
 
         timeout_seconds = int(options.get("execution_timeout_seconds", 7200))
         return SSHOperator(
