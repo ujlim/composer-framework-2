@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # Author: LIM UI JIN
-# Created: 2026-09-09
+# Created: 2026-09-15
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import logging
 import os
@@ -34,41 +35,21 @@ def setup_logging(config: dict) -> None:
     runner = config.get("runner") or {}
     log_dir = Path(runner.get("log_dir", DEFAULT_LOG_DIR))
     log_dir.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        handlers=[
-            logging.FileHandler(log_dir / "sftp-runner.log"),
-            logging.StreamHandler(),
-        ],
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=[logging.FileHandler(log_dir / "sftp-runner.log"), logging.StreamHandler()])
 
 
 def build_google_credentials(config: dict) -> tuple[Any, str | None]:
-    """Build ADC or VM-SA -> Runner-SA impersonated credentials for GCP APIs."""
     runner = config.get("runner") or {}
-    source_credentials, detected_project_id = google.auth.default(
-        scopes=[CLOUD_PLATFORM_SCOPE]
-    )
+    source_credentials, detected_project_id = google.auth.default(scopes=[CLOUD_PLATFORM_SCOPE])
     project_id = runner.get("project_id") or detected_project_id
     target_principal = runner.get("service_account")
-
     if not target_principal:
-        logging.warning(
-            "runner.service_account is not configured; using VM/Application Default Credentials directly"
-        )
+        logging.warning("runner.service_account is not configured; using VM/Application Default Credentials directly")
         return source_credentials, project_id
-
     lifetime = int(runner.get("impersonation_lifetime_seconds", 3600))
     if lifetime < 300 or lifetime > 3600:
         raise ValueError("runner.impersonation_lifetime_seconds must be between 300 and 3600")
-
-    credentials = impersonated_credentials.Credentials(
-        source_credentials=source_credentials,
-        target_principal=str(target_principal),
-        target_scopes=[CLOUD_PLATFORM_SCOPE],
-        lifetime=lifetime,
-    )
+    credentials = impersonated_credentials.Credentials(source_credentials=source_credentials, target_principal=str(target_principal), target_scopes=[CLOUD_PLATFORM_SCOPE], lifetime=lifetime)
     logging.info("Using impersonated Google service account: %s", target_principal)
     return credentials, project_id
 
@@ -100,48 +81,105 @@ def mkdir_p(sftp: paramiko.SFTPClient, remote_dir: str) -> None:
             sftp.mkdir(current)
 
 
-def connect(
-    config: dict,
-    target: dict,
-    google_credentials: Any,
-) -> tuple[paramiko.SSHClient, paramiko.SFTPClient]:
+def connect(config: dict, target: dict, google_credentials: Any) -> tuple[paramiko.SSHClient, paramiko.SFTPClient]:
     runner = config.get("runner") or {}
-    known_hosts = runner.get("known_hosts", DEFAULT_KNOWN_HOSTS)
-    auth_type = str(target.get("auth_type", "password")).lower()
-
     client = paramiko.SSHClient()
-    client.load_host_keys(known_hosts)
+    client.load_host_keys(runner.get("known_hosts", DEFAULT_KNOWN_HOSTS))
     client.set_missing_host_key_policy(paramiko.RejectPolicy())
-
-    kwargs = dict(
-        hostname=target["host"],
-        port=int(target.get("port", 22)),
-        username=target["username"],
-        timeout=int(target.get("connect_timeout_seconds", 30)),
-        banner_timeout=int(target.get("banner_timeout_seconds", 30)),
-        auth_timeout=int(target.get("auth_timeout_seconds", 30)),
-        look_for_keys=False,
-        allow_agent=False,
-    )
-
+    kwargs = dict(hostname=target["host"], port=int(target.get("port", 22)), username=target["username"], timeout=int(target.get("connect_timeout_seconds", 30)), banner_timeout=int(target.get("banner_timeout_seconds", 30)), auth_timeout=int(target.get("auth_timeout_seconds", 30)), look_for_keys=False, allow_agent=False)
+    auth_type = str(target.get("auth_type", "password")).lower()
     if auth_type == "password":
         secret_id = target.get("password_secret")
         project_id = target.get("secret_project_id") or runner.get("project_id")
         if not secret_id or not project_id:
             raise ValueError("password auth requires password_secret and secret project_id")
-        kwargs["password"] = access_secret(
-            str(project_id), str(secret_id), google_credentials
-        )
+        kwargs["password"] = access_secret(str(project_id), str(secret_id), google_credentials)
     elif auth_type == "private_key":
-        key_file = target.get("key_file")
-        if not key_file:
+        if not target.get("key_file"):
             raise ValueError("private_key auth requires key_file")
-        kwargs["key_filename"] = key_file
+        kwargs["key_filename"] = target["key_file"]
     else:
         raise ValueError(f"Unsupported auth_type: {auth_type}")
-
     client.connect(**kwargs)
     return client, client.open_sftp()
+
+
+def count_csv_rows(path: Path, has_header: bool) -> int:
+    with path.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.reader(fh)
+        count = sum(1 for _ in reader)
+    return max(0, count - (1 if has_header and count else 0))
+
+
+def merge_csv_blobs(blobs: list[Any], temp_dir: Path, has_header: bool) -> tuple[Path, int, list[tuple[str, int]]]:
+    fd, merged_name = tempfile.mkstemp(prefix="sftp-runner-merged-", suffix=".csv", dir=temp_dir)
+    os.close(fd)
+    merged_path = Path(merged_name)
+    source_counts: list[tuple[str, int]] = []
+    try:
+        with merged_path.open("w", encoding="utf-8", newline="") as out_fh:
+            writer = csv.writer(out_fh, lineterminator="\n")
+            header_written = False
+            for blob in sorted(blobs, key=lambda b: b.name):
+                fd, part_name = tempfile.mkstemp(prefix="sftp-runner-part-", suffix=".csv", dir=temp_dir)
+                os.close(fd)
+                part_path = Path(part_name)
+                try:
+                    blob.download_to_filename(str(part_path))
+                    rows = count_csv_rows(part_path, has_header)
+                    source_counts.append((blob.name, rows))
+                    logging.info("SOURCE_FILE file=%s rows=%d", blob.name, rows)
+                    with part_path.open("r", encoding="utf-8", newline="") as in_fh:
+                        reader = csv.reader(in_fh)
+                        first = True
+                        for record in reader:
+                            if first and has_header:
+                                first = False
+                                if header_written:
+                                    continue
+                                header_written = True
+                            else:
+                                first = False
+                            writer.writerow(record)
+                finally:
+                    part_path.unlink(missing_ok=True)
+        source_total = sum(rows for _, rows in source_counts)
+        merged_rows = count_csv_rows(merged_path, has_header)
+        logging.info("SOURCE_TOTAL files=%d rows=%d", len(source_counts), source_total)
+        logging.info("MERGE_COMPLETE file=%s rows=%d", merged_path.name, merged_rows)
+        if source_total != merged_rows:
+            logging.error("ROW_VERIFICATION source_rows=%d merged_rows=%d result=FAIL", source_total, merged_rows)
+            raise RuntimeError(f"CSV row verification failed: source_rows={source_total}, merged_rows={merged_rows}")
+        logging.info("ROW_VERIFICATION source_rows=%d merged_rows=%d result=PASS", source_total, merged_rows)
+        return merged_path, merged_rows, source_counts
+    except Exception:
+        merged_path.unlink(missing_ok=True)
+        raise
+
+
+def upload_atomic(sftp: paramiko.SFTPClient, local_path: Path, remote_path: str, overwrite: bool) -> None:
+    mkdir_p(sftp, posixpath.dirname(remote_path))
+    if not overwrite:
+        try:
+            sftp.stat(remote_path)
+        except FileNotFoundError:
+            pass
+        else:
+            raise FileExistsError(f"Remote file already exists: {remote_path}")
+    uploading_path = remote_path + ".uploading"
+    try:
+        sftp.remove(uploading_path)
+    except FileNotFoundError:
+        pass
+    sftp.put(str(local_path), uploading_path, confirm=True)
+    if sftp.stat(uploading_path).st_size != local_path.stat().st_size:
+        raise RuntimeError(f"SFTP size verification failed: {remote_path}")
+    if overwrite:
+        try:
+            sftp.remove(remote_path)
+        except FileNotFoundError:
+            pass
+    sftp.rename(uploading_path, remote_path)
 
 
 def main() -> int:
@@ -153,6 +191,9 @@ def main() -> int:
     parser.add_argument("--allow-empty", action="store_true")
     parser.add_argument("--delete-source", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--merge-filename")
+    parser.add_argument("--csv-header", action="store_true")
+    parser.add_argument("--fin-filename")
     args = parser.parse_args()
 
     config = load_config()
@@ -160,86 +201,74 @@ def main() -> int:
     runner = config.get("runner") or {}
     temp_dir = Path(runner.get("temp_dir", DEFAULT_TEMP_DIR))
     temp_dir.mkdir(parents=True, exist_ok=True)
-
-    google_credentials, project_id = build_google_credentials(config)
-
+    credentials, project_id = build_google_credentials(config)
     prefix = args.prefix.lstrip("/")
     if not prefix:
         raise ValueError("--prefix must not be empty; refusing a whole-bucket transfer")
-
-    target = load_target(config, args.target)
-    storage_client = storage.Client(
-        project=project_id,
-        credentials=google_credentials,
-    )
+    storage_client = storage.Client(project=project_id, credentials=credentials)
     bucket = storage_client.bucket(args.bucket)
-    blobs = [
-        blob
-        for blob in storage_client.list_blobs(args.bucket, prefix=prefix)
-        if not blob.name.endswith("/")
-    ]
+    blobs = [b for b in storage_client.list_blobs(args.bucket, prefix=prefix) if not b.name.endswith("/")]
     if not blobs:
         if args.allow_empty:
             logging.info("No objects found under gs://%s/%s", args.bucket, prefix)
             return 0
         raise FileNotFoundError(f"No objects found under gs://{args.bucket}/{prefix}")
 
-    ssh, sftp = connect(config, target, google_credentials)
-    uploaded: list[str] = []
+    target = load_target(config, args.target)
+    ssh, sftp = connect(config, target, credentials)
+    merged_path: Path | None = None
     try:
+        if args.merge_filename:
+            logging.info("MERGE_START bucket=%s prefix=%s files=%d", args.bucket, prefix, len(blobs))
+            merged_path, merged_rows, _ = merge_csv_blobs(blobs, temp_dir, args.csv_header)
+            remote_data = posixpath.join(args.remote_dir.rstrip("/"), args.merge_filename)
+            upload_atomic(sftp, merged_path, remote_data, args.overwrite)
+            logging.info("SFTP_DATA_COMPLETE file=%s rows=%d", remote_data, merged_rows)
+            if args.fin_filename:
+                fd, fin_name = tempfile.mkstemp(prefix="sftp-runner-fin-", dir=temp_dir)
+                os.close(fd)
+                fin_path = Path(fin_name)
+                try:
+                    fin_path.write_text(f"{merged_rows}\n", encoding="utf-8")
+                    remote_fin = posixpath.join(args.remote_dir.rstrip("/"), args.fin_filename)
+                    logging.info("FIN_CREATED file=%s content=%d", args.fin_filename, merged_rows)
+                    upload_atomic(sftp, fin_path, remote_fin, args.overwrite)
+                    logging.info("SFTP_FIN_COMPLETE file=%s", remote_fin)
+                finally:
+                    fin_path.unlink(missing_ok=True)
+            if args.delete_source:
+                for blob in blobs:
+                    blob.delete()
+            logging.info("JOB_COMPLETE result=SUCCESS source_files=%d rows=%d", len(blobs), merged_rows)
+            return 0
+
+        uploaded: list[str] = []
         for blob in blobs:
             relative = blob.name[len(prefix):].lstrip("/")
             if not relative:
                 continue
             remote_path = posixpath.join(args.remote_dir.rstrip("/"), relative)
-            mkdir_p(sftp, posixpath.dirname(remote_path))
-            if not args.overwrite:
-                try:
-                    sftp.stat(remote_path)
-                except FileNotFoundError:
-                    pass
-                else:
-                    raise FileExistsError(f"Remote file already exists: {remote_path}")
-
-            with tempfile.NamedTemporaryFile(
-                prefix="sftp-runner-",
-                dir=temp_dir,
-                delete=True,
-            ) as tmp:
-                blob.download_to_filename(tmp.name)
-                local_size = os.path.getsize(tmp.name)
-                sftp.put(tmp.name, remote_path, confirm=True)
-                remote_size = sftp.stat(remote_path).st_size
-                if remote_size != local_size:
-                    raise RuntimeError(
-                        f"SFTP size verification failed for {blob.name}: "
-                        f"local={local_size}, remote={remote_size}"
-                    )
+            fd, tmp_name = tempfile.mkstemp(prefix="sftp-runner-", dir=temp_dir)
+            os.close(fd)
+            tmp_path = Path(tmp_name)
+            try:
+                blob.download_to_filename(str(tmp_path))
+                upload_atomic(sftp, tmp_path, remote_path, args.overwrite)
+            finally:
+                tmp_path.unlink(missing_ok=True)
             uploaded.append(blob.name)
-            logging.info(
-                "Uploaded gs://%s/%s -> %s:%s",
-                args.bucket,
-                blob.name,
-                args.target,
-                remote_path,
-            )
-
-        deleted_count = 0
+            logging.info("Uploaded gs://%s/%s -> %s:%s", args.bucket, blob.name, args.target, remote_path)
         if args.delete_source:
             for object_name in uploaded:
                 bucket.blob(object_name).delete()
-                deleted_count += 1
-
-        logging.info(
-            "Transfer complete target=%s bucket=%s prefix=%s uploaded=%d deleted=%d",
-            args.target,
-            args.bucket,
-            prefix,
-            len(uploaded),
-            deleted_count,
-        )
+        logging.info("Transfer complete target=%s bucket=%s prefix=%s uploaded=%d", args.target, args.bucket, prefix, len(uploaded))
         return 0
+    except Exception:
+        logging.exception("JOB_ABORTED result=FAIL")
+        raise
     finally:
+        if merged_path:
+            merged_path.unlink(missing_ok=True)
         sftp.close()
         ssh.close()
 
