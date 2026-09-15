@@ -12,7 +12,29 @@ from framework.utils import merge_dicts, validate_airflow_id
 
 
 def _arg(value: Any) -> str:
-    return shlex.quote(str(value))
+    """Shell-quote a command argument without corrupting Airflow Jinja templates.
+
+    shlex.quote() rewrites embedded single quotes. That is safe for a shell, but a
+    Jinja expression such as::
+
+        {{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}
+
+    is rendered by Airflow *after* this command string is built. Rewriting the
+    quotes before Jinja rendering corrupts the expression. For templated values,
+    keep the Jinja expression intact inside a shell double-quoted argument and
+    escape only characters that are significant to the shell. Non-templated
+    values continue to use shlex.quote().
+    """
+    text = str(value)
+    if "{{" in text or "{%" in text or "{#" in text:
+        escaped = (
+            text.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("$", "\\$")
+            .replace("`", "\\`")
+        )
+        return f'"{escaped}"'
+    return shlex.quote(text)
 
 
 class SftpRunnerExecutor:
