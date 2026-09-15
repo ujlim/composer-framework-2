@@ -1,0 +1,29 @@
+version: 1
+
+root:
+  root_id: ujlim_sftp_runner_sample_daily_root
+  description: Daily sample - transfer GCS CSV files to SFTP Runner
+  owner: framework-test
+  schedule: "0 2 * * *"
+  timezone: Asia/Seoul
+  start_date: "2026-09-15"
+  catchup: false
+  max_active_runs: 1
+  tags: [sample, test, sftp, gcs]
+
+# Daily scheduled run uses the previous calendar day as business_date.
+business_date:
+  type: daily
+  source: data_interval_end
+  offset_days: -1
+  timezone: Asia/Seoul
+
+defaults:
+  wait_for_completion: true
+  poke_interval_seconds: 30
+  execution_timeout_seconds: 7200
+  reset_dag_run: false
+  deferrable: true
+
+vines:
+  - vine_id: ujlim_sftp_runner_sample_daily
