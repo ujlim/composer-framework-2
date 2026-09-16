@@ -9,14 +9,16 @@ vine:
   start_date: "2026-01-01"
   max_active_runs: 1
   dagrun_timeout_seconds: 3600
-  tags: [sample, test, postgres, cloudsql, secret-manager]
+  tags: [sample, test, postgres, cloudsql, secret-manager, silver]
 
 business_date:
   type: daily
 
 runtime:
   gcp_conn_id: google_cloud_default
-  impersonation_chain: null
+  # Composer SA impersonates the Silver execution SA.
+  # For a Gold workload, replace silver with gold below.
+  impersonation_chain: sa-prod-sa-ubi-airflow-user-silver@gcp-prod-edp-sa-ubi.iam.gserviceaccount.com
   postgres_connection_id: conn-sql-pg-udw-user1
 
 grape_defaults:
