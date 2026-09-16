@@ -110,7 +110,7 @@ class VineFactory:
                 )
             elif grape_type in {"gcs_copy_object", "gcs_delete_object", "gcs_move_prefix"}:
                 task = GCSExecutor.create_task(dag=dag, grape=grape, runtime=runtime, defaults=defaults)
-            elif grape_type == "postgres_sql":
+            elif grape_type in {"postgres_sql", "postgres_to_gcs"}:
                 task = PostgresExecutor.create_task(
                     dag=dag,
                     vine_config=self.config,
