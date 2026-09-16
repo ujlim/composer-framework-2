@@ -12,19 +12,7 @@ from framework.utils import merge_dicts, validate_airflow_id
 
 
 def _arg(value: Any) -> str:
-    """Shell-quote a command argument without corrupting Airflow Jinja templates.
-
-    shlex.quote() rewrites embedded single quotes. That is safe for a shell, but a
-    Jinja expression such as::
-
-        {{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}
-
-    is rendered by Airflow *after* this command string is built. Rewriting the
-    quotes before Jinja rendering corrupts the expression. For templated values,
-    keep the Jinja expression intact inside a shell double-quoted argument and
-    escape only characters that are significant to the shell. Non-templated
-    values continue to use shlex.quote().
-    """
+    """Shell-quote a command argument without corrupting Airflow Jinja templates."""
     text = str(value)
     if "{{" in text or "{%" in text or "{#" in text:
         escaped = (
@@ -81,13 +69,27 @@ class SftpRunnerExecutor:
         if bool(options.get("overwrite", False)):
             command += " --overwrite"
 
+        # Preferred simple Vine YAML syntax:
+        # options:
+        #   merge_filename: "merged_{{ ... }}.csv"
+        #   csv_header: true
+        #   fin_filename: "merged.fin"
+        # Keep the older nested merge/fin syntax backward compatible.
+        merge_filename = options.get("merge_filename")
+        csv_header = options.get("csv_header")
+        fin_filename = options.get("fin_filename")
+
         merge = options.get("merge") or {}
-        if bool(merge.get("enabled", False)):
-            filename = destination.get("filename") or merge.get("filename")
-            if not isinstance(filename, str) or not filename.strip():
-                raise ValueError(f"{grape_id}: merge enabled requires destination.filename")
-            command += " --merge-filename " + _arg(filename)
-            if bool(merge.get("header", True)):
+        if merge_filename is None and bool(merge.get("enabled", False)):
+            merge_filename = destination.get("filename") or merge.get("filename")
+            if csv_header is None:
+                csv_header = merge.get("header", True)
+
+        if merge_filename is not None:
+            if not isinstance(merge_filename, str) or not merge_filename.strip():
+                raise ValueError(f"{grape_id}: options.merge_filename must be a non-empty string")
+            command += " --merge-filename " + _arg(merge_filename)
+            if bool(csv_header):
                 command += " --csv-header"
 
             verification = options.get("verification") or {}
@@ -95,10 +97,11 @@ class SftpRunnerExecutor:
                 raise ValueError(f"{grape_id}: merged CSV currently requires row_count verification")
 
             fin = options.get("fin") or {}
-            if bool(fin.get("enabled", False)):
+            if fin_filename is None and bool(fin.get("enabled", False)):
                 fin_filename = fin.get("filename")
+            if fin_filename is not None:
                 if not isinstance(fin_filename, str) or not fin_filename.strip():
-                    raise ValueError(f"{grape_id}: fin enabled requires options.fin.filename")
+                    raise ValueError(f"{grape_id}: options.fin_filename must be a non-empty string")
                 command += " --fin-filename " + _arg(fin_filename)
 
         timeout_seconds = int(options.get("execution_timeout_seconds", 7200))
