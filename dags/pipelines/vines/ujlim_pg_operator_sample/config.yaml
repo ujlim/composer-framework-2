@@ -2,14 +2,14 @@ version: 1
 
 vine:
   vine_id: ujlim_pg_operator_sample
-  description: Sample Vine for Cloud SQL PostgreSQL SQL execution with KMS-encrypted credentials
+  description: Sample Vine for Cloud SQL PostgreSQL SQL execution and GCS export using Secret Manager Airflow Connection
   owner: framework-test
   schedule: null
   timezone: Asia/Seoul
   start_date: "2026-01-01"
   max_active_runs: 1
   dagrun_timeout_seconds: 3600
-  tags: [sample, test, postgres, cloudsql, kms]
+  tags: [sample, test, postgres, cloudsql, secret-manager, gcs]
 
 business_date:
   type: daily
@@ -17,6 +17,7 @@ business_date:
 runtime:
   gcp_conn_id: google_cloud_default
   impersonation_chain: null
+  postgres_connection_id: conn-sql-pg-udw-user1
 
 grape_defaults:
   retries: 1
@@ -30,15 +31,25 @@ grapes:
   - grape_id: query_postgres
     type: postgres_sql
     sql_file: sql/010_query_business_date.sql
-    connection:
-      # Full CryptoKey resource name, not a key version.
-      kms_key_name: projects/REPLACE_PROJECT/locations/asia-northeast3/keyRings/REPLACE_KEYRING/cryptoKeys/REPLACE_KEY
-      # Base64 text of the binary ciphertext produced by `gcloud kms encrypt`.
-      # Never put plaintext host/user/password values in this YAML.
-      encrypted_credentials: REPLACE_WITH_BASE64_KMS_CIPHERTEXT
+    # Optional because runtime.postgres_connection_id is defined.
+    # connection_id: conn-sql-pg-udw-user1
     parameters:
       business_date: "{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}"
     options:
       autocommit: false
       fetch: all
       max_fetch_rows: 10
+
+  - grape_id: export_postgres_to_gcs
+    type: postgres_to_gcs
+    depends_on: [query_postgres]
+    sql_file: sql/020_export_sample.sql
+    parameters:
+      business_date: "{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}"
+    destination:
+      bucket: REPLACE_WITH_BUCKET
+      object: "postgres/ujlim_sample/business_date={{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}/sample.csv"
+    options:
+      chunk_rows: 5000
+      include_header: true
+      execution_timeout_seconds: 3600
