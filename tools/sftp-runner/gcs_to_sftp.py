@@ -100,8 +100,34 @@ def connect(config: dict, target: dict, google_credentials: Any) -> tuple[parami
         kwargs["key_filename"] = target["key_file"]
     else:
         raise ValueError(f"Unsupported auth_type: {auth_type}")
+
+    logging.info(
+        "SFTP_CONNECT_START host=%s port=%s user=%s auth_type=%s",
+        target["host"], target.get("port", 22), target["username"], auth_type,
+    )
     client.connect(**kwargs)
-    return client, client.open_sftp()
+    transport = client.get_transport()
+    logging.info(
+        "SSH_AUTH_COMPLETE host=%s port=%s active=%s authenticated=%s remote_version=%s",
+        target["host"], target.get("port", 22),
+        transport.is_active() if transport else None,
+        transport.is_authenticated() if transport else None,
+        transport.remote_version if transport else None,
+    )
+    logging.info("SFTP_SUBSYSTEM_OPEN_START host=%s port=%s", target["host"], target.get("port", 22))
+    try:
+        sftp = client.open_sftp()
+    except Exception:
+        logging.exception(
+            "SFTP_SUBSYSTEM_OPEN_FAIL host=%s port=%s active=%s authenticated=%s",
+            target["host"], target.get("port", 22),
+            transport.is_active() if transport else None,
+            transport.is_authenticated() if transport else None,
+        )
+        client.close()
+        raise
+    logging.info("SFTP_SUBSYSTEM_OPEN_COMPLETE host=%s port=%s", target["host"], target.get("port", 22))
+    return client, sftp
 
 
 def count_csv_rows(path: Path, has_header: bool) -> int:
@@ -198,6 +224,11 @@ def main() -> int:
 
     config = load_config()
     setup_logging(config)
+    logging.info(
+        "TRANSFER_MODE mode=%s merge_filename=%s csv_header=%s fin_filename=%s",
+        "MERGE" if args.merge_filename else "NORMAL",
+        args.merge_filename or "-", args.csv_header, args.fin_filename or "-",
+    )
     runner = config.get("runner") or {}
     temp_dir = Path(runner.get("temp_dir", DEFAULT_TEMP_DIR))
     temp_dir.mkdir(parents=True, exist_ok=True)
@@ -208,6 +239,7 @@ def main() -> int:
     storage_client = storage.Client(project=project_id, credentials=credentials)
     bucket = storage_client.bucket(args.bucket)
     blobs = [b for b in storage_client.list_blobs(args.bucket, prefix=prefix) if not b.name.endswith("/")]
+    logging.info("GCS_SOURCE_DISCOVERED bucket=%s prefix=%s files=%d", args.bucket, prefix, len(blobs))
     if not blobs:
         if args.allow_empty:
             logging.info("No objects found under gs://%s/%s", args.bucket, prefix)
