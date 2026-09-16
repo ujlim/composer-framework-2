@@ -11,6 +11,7 @@ import logging
 import os
 import posixpath
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,8 @@ DEFAULT_KNOWN_HOSTS = "/engn/sftp-runner/conf/known_hosts"
 DEFAULT_TEMP_DIR = "/data/sftp-runner/tmp"
 DEFAULT_LOG_DIR = "/logs/sftp-runner"
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+SFTP_CONNECT_MAX_ATTEMPTS = 3
+SFTP_CONNECT_RETRY_SECONDS = 5
 
 
 def load_config() -> dict:
@@ -83,11 +86,8 @@ def mkdir_p(sftp: paramiko.SFTPClient, remote_dir: str) -> None:
 
 def connect(config: dict, target: dict, google_credentials: Any) -> tuple[paramiko.SSHClient, paramiko.SFTPClient]:
     runner = config.get("runner") or {}
-    client = paramiko.SSHClient()
-    client.load_host_keys(runner.get("known_hosts", DEFAULT_KNOWN_HOSTS))
-    client.set_missing_host_key_policy(paramiko.RejectPolicy())
-    kwargs = dict(hostname=target["host"], port=int(target.get("port", 22)), username=target["username"], timeout=int(target.get("connect_timeout_seconds", 30)), banner_timeout=int(target.get("banner_timeout_seconds", 30)), auth_timeout=int(target.get("auth_timeout_seconds", 30)), look_for_keys=False, allow_agent=False)
     auth_type = str(target.get("auth_type", "password")).lower()
+    kwargs = dict(hostname=target["host"], port=int(target.get("port", 22)), username=target["username"], timeout=int(target.get("connect_timeout_seconds", 30)), banner_timeout=int(target.get("banner_timeout_seconds", 30)), auth_timeout=int(target.get("auth_timeout_seconds", 30)), look_for_keys=False, allow_agent=False)
     if auth_type == "password":
         secret_id = target.get("password_secret")
         project_id = target.get("secret_project_id") or runner.get("project_id")
@@ -100,19 +100,63 @@ def connect(config: dict, target: dict, google_credentials: Any) -> tuple[parami
         kwargs["key_filename"] = target["key_file"]
     else:
         raise ValueError(f"Unsupported auth_type: {auth_type}")
-    logging.info("SFTP_CONNECT_START host=%s port=%s user=%s auth_type=%s", target["host"], target.get("port", 22), target["username"], auth_type)
-    client.connect(**kwargs)
-    transport = client.get_transport()
-    logging.info("SSH_AUTH_COMPLETE host=%s port=%s active=%s authenticated=%s remote_version=%s", target["host"], target.get("port", 22), transport.is_active() if transport else None, transport.is_authenticated() if transport else None, transport.remote_version if transport else None)
-    logging.info("SFTP_SUBSYSTEM_OPEN_START host=%s port=%s", target["host"], target.get("port", 22))
-    try:
-        sftp = client.open_sftp()
-    except Exception:
-        logging.exception("SFTP_SUBSYSTEM_OPEN_FAIL host=%s port=%s active=%s authenticated=%s", target["host"], target.get("port", 22), transport.is_active() if transport else None, transport.is_authenticated() if transport else None)
-        client.close()
-        raise
-    logging.info("SFTP_SUBSYSTEM_OPEN_COMPLETE host=%s port=%s", target["host"], target.get("port", 22))
-    return client, sftp
+
+    max_attempts = int(target.get("connect_max_attempts", SFTP_CONNECT_MAX_ATTEMPTS))
+    retry_seconds = int(target.get("connect_retry_seconds", SFTP_CONNECT_RETRY_SECONDS))
+    if max_attempts < 1:
+        raise ValueError("connect_max_attempts must be >= 1")
+    if retry_seconds < 0:
+        raise ValueError("connect_retry_seconds must be >= 0")
+
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        client = paramiko.SSHClient()
+        client.load_host_keys(runner.get("known_hosts", DEFAULT_KNOWN_HOSTS))
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        logging.info(
+            "SFTP_CONNECT_ATTEMPT attempt=%d/%d host=%s port=%s user=%s auth_type=%s",
+            attempt, max_attempts, target["host"], target.get("port", 22), target["username"], auth_type,
+        )
+        try:
+            client.connect(**kwargs)
+            transport = client.get_transport()
+            logging.info(
+                "SSH_AUTH_COMPLETE attempt=%d/%d host=%s port=%s active=%s authenticated=%s remote_version=%s",
+                attempt, max_attempts, target["host"], target.get("port", 22),
+                transport.is_active() if transport else None,
+                transport.is_authenticated() if transport else None,
+                transport.remote_version if transport else None,
+            )
+            logging.info(
+                "SFTP_SUBSYSTEM_OPEN_START attempt=%d/%d host=%s port=%s",
+                attempt, max_attempts, target["host"], target.get("port", 22),
+            )
+            sftp = client.open_sftp()
+            logging.info(
+                "SFTP_SUBSYSTEM_OPEN_COMPLETE attempt=%d/%d host=%s port=%s",
+                attempt, max_attempts, target["host"], target.get("port", 22),
+            )
+            return client, sftp
+        except Exception as exc:
+            last_error = exc
+            transport = client.get_transport()
+            logging.exception(
+                "SFTP_CONNECT_ATTEMPT_FAIL attempt=%d/%d host=%s port=%s active=%s authenticated=%s",
+                attempt, max_attempts, target["host"], target.get("port", 22),
+                transport.is_active() if transport else None,
+                transport.is_authenticated() if transport else None,
+            )
+            client.close()
+            if attempt < max_attempts:
+                logging.warning(
+                    "SFTP_RECONNECT_WAIT attempt=%d/%d seconds=%d",
+                    attempt, max_attempts, retry_seconds,
+                )
+                time.sleep(retry_seconds)
+
+    assert last_error is not None
+    logging.error("SFTP_CONNECT_EXHAUSTED attempts=%d host=%s port=%s", max_attempts, target["host"], target.get("port", 22))
+    raise last_error
 
 
 def count_csv_rows(path: Path, has_header: bool, encoding: str) -> int:
