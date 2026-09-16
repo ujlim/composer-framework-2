@@ -100,50 +100,35 @@ def connect(config: dict, target: dict, google_credentials: Any) -> tuple[parami
         kwargs["key_filename"] = target["key_file"]
     else:
         raise ValueError(f"Unsupported auth_type: {auth_type}")
-
-    logging.info(
-        "SFTP_CONNECT_START host=%s port=%s user=%s auth_type=%s",
-        target["host"], target.get("port", 22), target["username"], auth_type,
-    )
+    logging.info("SFTP_CONNECT_START host=%s port=%s user=%s auth_type=%s", target["host"], target.get("port", 22), target["username"], auth_type)
     client.connect(**kwargs)
     transport = client.get_transport()
-    logging.info(
-        "SSH_AUTH_COMPLETE host=%s port=%s active=%s authenticated=%s remote_version=%s",
-        target["host"], target.get("port", 22),
-        transport.is_active() if transport else None,
-        transport.is_authenticated() if transport else None,
-        transport.remote_version if transport else None,
-    )
+    logging.info("SSH_AUTH_COMPLETE host=%s port=%s active=%s authenticated=%s remote_version=%s", target["host"], target.get("port", 22), transport.is_active() if transport else None, transport.is_authenticated() if transport else None, transport.remote_version if transport else None)
     logging.info("SFTP_SUBSYSTEM_OPEN_START host=%s port=%s", target["host"], target.get("port", 22))
     try:
         sftp = client.open_sftp()
     except Exception:
-        logging.exception(
-            "SFTP_SUBSYSTEM_OPEN_FAIL host=%s port=%s active=%s authenticated=%s",
-            target["host"], target.get("port", 22),
-            transport.is_active() if transport else None,
-            transport.is_authenticated() if transport else None,
-        )
+        logging.exception("SFTP_SUBSYSTEM_OPEN_FAIL host=%s port=%s active=%s authenticated=%s", target["host"], target.get("port", 22), transport.is_active() if transport else None, transport.is_authenticated() if transport else None)
         client.close()
         raise
     logging.info("SFTP_SUBSYSTEM_OPEN_COMPLETE host=%s port=%s", target["host"], target.get("port", 22))
     return client, sftp
 
 
-def count_csv_rows(path: Path, has_header: bool) -> int:
-    with path.open("r", encoding="utf-8", newline="") as fh:
+def count_csv_rows(path: Path, has_header: bool, encoding: str) -> int:
+    with path.open("r", encoding=encoding, newline="") as fh:
         reader = csv.reader(fh)
         count = sum(1 for _ in reader)
     return max(0, count - (1 if has_header and count else 0))
 
 
-def merge_csv_blobs(blobs: list[Any], temp_dir: Path, has_header: bool) -> tuple[Path, int, list[tuple[str, int]]]:
+def merge_csv_blobs(blobs: list[Any], temp_dir: Path, has_header: bool, encoding: str) -> tuple[Path, int, list[tuple[str, int]]]:
     fd, merged_name = tempfile.mkstemp(prefix="sftp-runner-merged-", suffix=".csv", dir=temp_dir)
     os.close(fd)
     merged_path = Path(merged_name)
     source_counts: list[tuple[str, int]] = []
     try:
-        with merged_path.open("w", encoding="utf-8", newline="") as out_fh:
+        with merged_path.open("w", encoding=encoding, newline="") as out_fh:
             writer = csv.writer(out_fh, lineterminator="\n")
             header_written = False
             for blob in sorted(blobs, key=lambda b: b.name):
@@ -152,10 +137,10 @@ def merge_csv_blobs(blobs: list[Any], temp_dir: Path, has_header: bool) -> tuple
                 part_path = Path(part_name)
                 try:
                     blob.download_to_filename(str(part_path))
-                    rows = count_csv_rows(part_path, has_header)
+                    rows = count_csv_rows(part_path, has_header, encoding)
                     source_counts.append((blob.name, rows))
-                    logging.info("SOURCE_FILE file=%s rows=%d", blob.name, rows)
-                    with part_path.open("r", encoding="utf-8", newline="") as in_fh:
+                    logging.info("SOURCE_FILE file=%s rows=%d encoding=%s", blob.name, rows, encoding)
+                    with part_path.open("r", encoding=encoding, newline="") as in_fh:
                         reader = csv.reader(in_fh)
                         first = True
                         for record in reader:
@@ -170,9 +155,9 @@ def merge_csv_blobs(blobs: list[Any], temp_dir: Path, has_header: bool) -> tuple
                 finally:
                     part_path.unlink(missing_ok=True)
         source_total = sum(rows for _, rows in source_counts)
-        merged_rows = count_csv_rows(merged_path, has_header)
+        merged_rows = count_csv_rows(merged_path, has_header, encoding)
         logging.info("SOURCE_TOTAL files=%d rows=%d", len(source_counts), source_total)
-        logging.info("MERGE_COMPLETE file=%s rows=%d", merged_path.name, merged_rows)
+        logging.info("MERGE_COMPLETE file=%s rows=%d encoding=%s", merged_path.name, merged_rows, encoding)
         if source_total != merged_rows:
             logging.error("ROW_VERIFICATION source_rows=%d merged_rows=%d result=FAIL", source_total, merged_rows)
             raise RuntimeError(f"CSV row verification failed: source_rows={source_total}, merged_rows={merged_rows}")
@@ -219,16 +204,13 @@ def main() -> int:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--merge-filename")
     parser.add_argument("--csv-header", action="store_true")
+    parser.add_argument("--csv-encoding", default="utf-8")
     parser.add_argument("--fin-filename")
     args = parser.parse_args()
 
     config = load_config()
     setup_logging(config)
-    logging.info(
-        "TRANSFER_MODE mode=%s merge_filename=%s csv_header=%s fin_filename=%s",
-        "MERGE" if args.merge_filename else "NORMAL",
-        args.merge_filename or "-", args.csv_header, args.fin_filename or "-",
-    )
+    logging.info("TRANSFER_MODE mode=%s merge_filename=%s csv_header=%s csv_encoding=%s fin_filename=%s", "MERGE" if args.merge_filename else "NORMAL", args.merge_filename or "-", args.csv_header, args.csv_encoding, args.fin_filename or "-")
     runner = config.get("runner") or {}
     temp_dir = Path(runner.get("temp_dir", DEFAULT_TEMP_DIR))
     temp_dir.mkdir(parents=True, exist_ok=True)
@@ -251,8 +233,8 @@ def main() -> int:
     merged_path: Path | None = None
     try:
         if args.merge_filename:
-            logging.info("MERGE_START bucket=%s prefix=%s files=%d", args.bucket, prefix, len(blobs))
-            merged_path, merged_rows, _ = merge_csv_blobs(blobs, temp_dir, args.csv_header)
+            logging.info("MERGE_START bucket=%s prefix=%s files=%d encoding=%s", args.bucket, prefix, len(blobs), args.csv_encoding)
+            merged_path, merged_rows, _ = merge_csv_blobs(blobs, temp_dir, args.csv_header, args.csv_encoding)
             remote_data = posixpath.join(args.remote_dir.rstrip("/"), args.merge_filename)
             upload_atomic(sftp, merged_path, remote_data, args.overwrite)
             logging.info("SFTP_DATA_COMPLETE file=%s rows=%d", remote_data, merged_rows)
