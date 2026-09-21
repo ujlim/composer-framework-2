@@ -1,0 +1,12 @@
+{
+  "name": "UBIS JDBC Connection Test",
+  "description": "Tests JDBC connectivity from Dataflow workers to DB2, Oracle, or Vertica.",
+  "streaming": false,
+  "parameters": [
+    {"name":"db_type","label":"Database Type","helpText":"db2, oracle, or vertica","regexes":["^(db2|oracle|vertica)$"]},
+    {"name":"connection_url","label":"JDBC Connection URL","helpText":"JDBC connection URL"},
+    {"name":"username","label":"Database Username","helpText":"Database username"},
+    {"name":"password","label":"Database Password","helpText":"Database password"},
+    {"name":"driver_jars","label":"JDBC Driver JAR","helpText":"GCS location of JDBC driver JAR"}
+  ]
+}
