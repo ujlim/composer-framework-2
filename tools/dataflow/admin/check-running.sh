@@ -4,6 +4,7 @@ set -u
 PROJECT_ID="${PROJECT_ID:-gcp-prod-edp-sa-udw}"
 REGION="${REGION:-asia-northeast3}"
 LIST_COUNT="${LIST_COUNT:-10}"
+FETCH_COUNT="${FETCH_COUNT:-100}"
 LOG_LIMIT="${LOG_LIMIT:-1000}"
 
 echo
@@ -20,9 +21,11 @@ mapfile -t JOBS < <(
     --project="${PROJECT_ID}" \
     --region="${REGION}" \
     --status=all \
-    --sort-by="~createTime" \
-    --limit="${LIST_COUNT}" \
-    --format="value(id,name,currentState,createTime)"
+    --limit="${FETCH_COUNT}" \
+    --format="csv[no-heading](JOB_ID,NAME,STATE,CREATION_TIME)" \
+  | sort -t',' -k4,4r \
+  | head -n "${LIST_COUNT}" \
+  | tr ',' '\t'
 )
 
 if [ ${#JOBS[@]} -eq 0 ]; then
