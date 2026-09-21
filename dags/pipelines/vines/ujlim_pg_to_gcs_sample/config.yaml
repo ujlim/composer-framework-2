@@ -1,0 +1,44 @@
+version: 1
+
+vine:
+  vine_id: ujlim_pg_to_gcs_sample
+  description: Sample Vine for exporting Cloud SQL PostgreSQL query results to GCS using Silver execution SA
+  owner: framework-test
+  schedule: null
+  timezone: Asia/Seoul
+  start_date: "2026-01-01"
+  max_active_runs: 1
+  dagrun_timeout_seconds: 7200
+  tags: [sample, test, postgres, cloudsql, secret-manager, gcs, silver]
+
+business_date:
+  type: daily
+
+runtime:
+  gcp_conn_id: google_cloud_default
+  # Composer SA impersonates this execution SA. GCS bucket permission belongs to this SA.
+  # Gold example: sa-prod-sa-ubi-airflow-user-gold@gcp-prod-edp-sa-ubi.iam.gserviceaccount.com
+  impersonation_chain: sa-prod-sa-ubi-airflow-user-silver@gcp-prod-edp-sa-ubi.iam.gserviceaccount.com
+  postgres_connection_id: conn-sql-pg-udw-user1
+
+grape_defaults:
+  retries: 1
+  retry_delay_seconds: 60
+  execution_timeout_seconds: 3600
+  connect_timeout_seconds: 30
+  pool: default_pool
+  priority_weight: 1
+
+grapes:
+  - grape_id: export_postgres_to_gcs
+    type: postgres_to_gcs
+    sql_file: sql/010_export_sample.sql
+    parameters:
+      business_date: "{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}"
+    destination:
+      bucket: REPLACE_WITH_BUCKET
+      object: "postgres/ujlim_pg_to_gcs/business_date={{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}/sample.csv"
+    options:
+      chunk_rows: 5000
+      include_header: true
+      execution_timeout_seconds: 3600

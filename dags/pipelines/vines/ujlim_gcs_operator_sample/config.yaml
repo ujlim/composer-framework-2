@@ -1,0 +1,51 @@
+version: 1
+
+vine:
+  vine_id: ujlim_gcs_operator_sample
+  description: Sample Vine for GCS single-object copy and delete Grapes
+  owner: framework-test
+  schedule: null
+  timezone: Asia/Seoul
+  start_date: "2026-01-01"
+  max_active_runs: 1
+  dagrun_timeout_seconds: 3600
+  tags: [sample, test, gcs, object]
+
+business_date:
+  type: daily
+
+runtime:
+  project_id: gcp-prod-edp-sa-ubi
+  location: asia-northeast3
+  gcp_conn_id: google_cloud_default
+  impersonation_chain: null
+
+grape_defaults:
+  retries: 1
+  retry_delay_seconds: 60
+  execution_timeout_seconds: 1800
+  pool: default_pool
+  priority_weight: 1
+
+grapes:
+  - grape_id: copy_source_object
+    type: gcs_copy_object
+    source:
+      bucket: REPLACE_WITH_SOURCE_BUCKET
+      object: "sample/{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}/input.dat"
+    destination:
+      bucket: REPLACE_WITH_DESTINATION_BUCKET
+      object: "archive/{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}/input.dat"
+    options:
+      overwrite: false
+
+  - grape_id: delete_source_object
+    type: gcs_delete_object
+    depends_on:
+      - copy_source_object
+    source:
+      bucket: REPLACE_WITH_SOURCE_BUCKET
+      object: "sample/{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}/input.dat"
+    options:
+      # true이면 재실행 시 이미 삭제된 객체 때문에 실패하지 않습니다.
+      ignore_if_missing: true

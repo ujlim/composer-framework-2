@@ -1,17 +1,15 @@
 version: 1
 
 vine:
-  vine_id: minimal_bq_vine
-  description: Minimal SQL and Stored Procedure test Vine
+  vine_id: vine_fin_downstream_02
+  description: Second downstream Vine started after FIN file detection
   owner: framework-test
   schedule: null
   timezone: Asia/Seoul
   start_date: "2026-01-01"
   max_active_runs: 1
   dagrun_timeout_seconds: 3600
-  tags:
-    - test
-    - bigquery
+  tags: [sample, test, fin-file, downstream]
 
 business_date:
   type: daily
@@ -22,32 +20,20 @@ runtime:
   gcp_conn_id: google_cloud_default
   impersonation_chain: null
   labels:
-    environment: test
+    sample: fin_sensor
 
 grape_defaults:
   retries: 1
   retry_delay_seconds: 60
   execution_timeout_seconds: 1800
-  pool: default_pool
-  priority_weight: 1
   deferrable: true
   force_rerun: true
   priority: INTERACTIVE
 
 grapes:
-  - grape_id: run_select_sql
+  - grape_id: downstream_02_sql
     type: bigquery_sql
-    sql_file: sql/010_select_test.sql
-    parameters:
-      business_date:
-        type: DATE
-        value: "{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}"
-
-  - grape_id: call_test_procedure
-    type: bigquery_procedure
-    procedure: gcp-prod-edp-sa-ubi.BDPL199.sp_framework_test
-    depends_on:
-      - run_select_sql
+    sql_file: sql/run.sql
     parameters:
       business_date:
         type: DATE

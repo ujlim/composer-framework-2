@@ -1,0 +1,41 @@
+version: 1
+
+vine:
+  vine_id: ujlim_pg_operator_sample
+  description: Sample Vine for simple Cloud SQL PostgreSQL SQL execution using Secret Manager Airflow Connection
+  owner: framework-test
+  schedule: null
+  timezone: Asia/Seoul
+  start_date: "2026-01-01"
+  max_active_runs: 1
+  dagrun_timeout_seconds: 3600
+  tags: [sample, test, postgres, cloudsql, secret-manager, silver]
+
+business_date:
+  type: daily
+
+runtime:
+  gcp_conn_id: google_cloud_default
+  # Composer SA impersonates the Silver execution SA.
+  # For a Gold workload, replace silver with gold below.
+  impersonation_chain: sa-prod-sa-ubi-airflow-user-silver@gcp-prod-edp-sa-ubi.iam.gserviceaccount.com
+  postgres_connection_id: conn-sql-pg-udw-user1
+
+grape_defaults:
+  retries: 1
+  retry_delay_seconds: 60
+  execution_timeout_seconds: 1800
+  connect_timeout_seconds: 30
+  pool: default_pool
+  priority_weight: 1
+
+grapes:
+  - grape_id: query_postgres
+    type: postgres_sql
+    sql_file: sql/010_query_business_date.sql
+    parameters:
+      business_date: "{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}"
+    options:
+      autocommit: false
+      fetch: all
+      max_fetch_rows: 10

@@ -1,0 +1,40 @@
+version: 1
+
+vine:
+  vine_id: vine_fin_sensor
+  description: Wait for daily FIN file in GCS before downstream Vines run
+  owner: framework-test
+  schedule: null
+  timezone: Asia/Seoul
+  start_date: "2026-01-01"
+  max_active_runs: 1
+  dagrun_timeout_seconds: 25200
+  tags: [sample, test, fin-file, sensor]
+
+business_date:
+  type: daily
+
+runtime:
+  project_id: gcp-prod-edp-sa-ubi
+  location: asia-northeast3
+  gcp_conn_id: google_cloud_default
+  impersonation_chain: null
+
+grape_defaults:
+  retries: 0
+  retry_delay_seconds: 60
+  execution_timeout_seconds: 21600
+  pool: default_pool
+  priority_weight: 1
+
+grapes:
+  - grape_id: wait_fin_file
+    type: gcs_fin_file_sensor
+    source:
+      bucket: REPLACE_WITH_FIN_BUCKET
+      object: "fin/{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}/_FIN"
+    options:
+      poke_interval_seconds: 60
+      timeout_seconds: 21600
+      deferrable: true
+      soft_fail: false

@@ -1,0 +1,46 @@
+version: 1
+
+vine:
+  vine_id: ujlim_sftp_runner_sample_daily
+  description: Daily sample - GCS CSV shards to SFTP target gcp-sftp-test-1
+  owner: framework-test
+  schedule: null
+  timezone: Asia/Seoul
+  start_date: "2026-09-15"
+  max_active_runs: 1
+  dagrun_timeout_seconds: 7200
+  tags: [sample, test, sftp, gcs]
+
+business_date:
+  type: daily
+
+runtime:
+  gcp_conn_id: google_cloud_default
+  impersonation_chain: null
+
+grape_defaults:
+  retries: 1
+  retry_delay_seconds: 60
+  execution_timeout_seconds: 7200
+  pool: default_pool
+  priority_weight: 1
+
+grapes:
+  - grape_id: gcs_to_sftp_test
+    type: gcs_to_sftp_runner
+    runner:
+      ssh_conn_id: conn-sftp-runner-1
+    source:
+      bucket: bucket-prod-sa-ubi-outbound-test-1
+      # RootFactory passes business_date to the triggered Vine through dag_run.conf.
+      prefix: "outbound/{{ dag_run.conf.get('business_date') }}/"
+    destination:
+      target: gcp-sftp-test-1
+      remote_dir: /upload
+    options:
+      allow_empty: false
+      delete_source: false
+      overwrite: false
+      retries: 1
+      retry_delay_seconds: 60
+      execution_timeout_seconds: 7200

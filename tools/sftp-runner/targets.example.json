@@ -1,0 +1,43 @@
+{
+  "runner": {
+    "project_id": "gcp-prod-edp-sa-udw",
+    "service_account": "sa-prod-sa-udw-sftp-runner@gcp-prod-edp-sa-udw.iam.gserviceaccount.com",
+    "impersonation_lifetime_seconds": 3600,
+    "temp_dir": "/data/sftp-runner/tmp",
+    "log_dir": "/logs/sftp-runner",
+    "known_hosts": "/engn/sftp-runner/conf/known_hosts"
+  },
+  "targets": {
+    "onprem-sftp-nrap-1": {
+      "host": "172.30.196.241",
+      "port": 22,
+      "username": "datagw3",
+      "auth_type": "password",
+      "password_secret": "secret-sftp-password-onprem-nrap",
+      "connect_timeout_seconds": 30,
+      "auth_timeout_seconds": 30,
+      "banner_timeout_seconds": 30
+    },
+    "gcp-sftp-test-1": {
+      "host": "10.133.192.108",
+      "port": 22,
+      "auth_type": "private_key",
+      "key_file": "/home/sftprunner/.ssh/sftp_runner_key",
+      "username": "sftpuser",
+      "password_secret": "secret-sftp-password-test-1",
+      "connect_timeout_seconds": 30,
+      "auth_timeout_seconds": 30,
+      "banner_timeout_seconds": 30
+    },
+    "gcp-sftp-test-proxy-1": {
+      "host": "10.133.192.107",
+      "port": 12006,
+      "auth_type": "password",
+      "username": "sftpuser",
+      "password_secret": "secret-sftp-password-test-1",
+      "connect_timeout_seconds": 30,
+      "auth_timeout_seconds": 30,
+      "banner_timeout_seconds": 30
+    }
+  }
+}

@@ -1,19 +1,16 @@
 version: 1
 
 root:
-  root_id: minimal_daily_root
-  description: Root DAG test - triggers one Vine
+  root_id: sample_business_daily_root
+  description: Sample Daily business context Root
   owner: framework-test
   schedule: "0 2 * * *"
   timezone: Asia/Seoul
   start_date: "2026-01-01"
   catchup: false
   max_active_runs: 1
-  tags:
-    - test
+  tags: [sample, test, business-date, daily]
 
-# Scheduled run business-date policy.
-# Example: 2026-08-19 02:00 run -> business_date=2026-08-18
 business_date:
   type: daily
   source: data_interval_end
@@ -28,9 +25,4 @@ defaults:
   deferrable: true
 
 vines:
-  - vine_id: minimal_bq_vine
-
-# business context is framework-managed and automatically passed to Vine DAGs.
-parameters:
-  recovery:
-    value: "{{ dag_run.conf.get('recovery', false) }}"
+  - vine_id: sample_business_daily_vine
