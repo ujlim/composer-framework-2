@@ -1,0 +1,37 @@
+version: 1
+
+vine:
+  vine_id: ujlim_gcs_delete_pattern_sample
+  description: Delete multiple GCS CSV objects by glob pattern
+  owner: framework-test
+  schedule: null
+  timezone: Asia/Seoul
+  start_date: "2026-09-22"
+  max_active_runs: 1
+  dagrun_timeout_seconds: 7200
+  tags: [sample, test, gcs]
+
+business_date:
+  type: daily
+
+runtime:
+  project_id: gcp-prod-edp-sa-ubi
+  location: asia-northeast3
+  gcp_conn_id: google_cloud_default
+  impersonation_chain: null
+
+grape_defaults:
+  retries: 1
+  retry_delay_seconds: 60
+  execution_timeout_seconds: 7200
+  pool: default_pool
+  priority_weight: 1
+
+grapes:
+  - grape_id: delete_csv_objects
+    type: gcs_delete_object
+    source:
+      bucket: bucket-prod-sa-ubi-outbound-test-1
+      pattern: "outbound/{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}/*.csv"
+    options:
+      ignore_if_missing: true
