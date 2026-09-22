@@ -136,6 +136,11 @@ def connect(config: dict, target: dict, google_credentials: Any) -> tuple[parami
                 "SFTP_SUBSYSTEM_OPEN_COMPLETE attempt=%d/%d host=%s port=%s",
                 attempt, max_attempts, target["host"], target.get("port", 22),
             )
+            logging.info(
+                "SFTP_CONNECT_SUCCESS attempt=%d/%d host=%s port=%s user=%s remote_version=%s",
+                attempt, max_attempts, target["host"], target.get("port", 22), target["username"],
+                transport.remote_version if transport else None,
+            )
             return client, sftp
         except Exception as exc:
             last_error = exc
@@ -290,9 +295,9 @@ def main() -> int:
                 try:
                     fin_path.write_text(f"{merged_rows}\n", encoding="utf-8")
                     remote_fin = posixpath.join(args.remote_dir.rstrip("/"), args.fin_filename)
-                    logging.info("FIN_CREATED file=%s content=%d", args.fin_filename, merged_rows)
+                    logging.info("FIN_CREATED type=row_count file=%s content=%d", args.fin_filename, merged_rows)
                     upload_atomic(sftp, fin_path, remote_fin, args.overwrite)
-                    logging.info("SFTP_FIN_COMPLETE type=row_count file=%s", remote_fin)
+                    logging.info("SFTP_FIN_COMPLETE type=row_count file=%s content=%d", remote_fin, merged_rows)
                 finally:
                     fin_path.unlink(missing_ok=True)
             if args.file_count_fin_filename:
@@ -304,13 +309,21 @@ def main() -> int:
                     remote_fin = posixpath.join(args.remote_dir.rstrip("/"), args.file_count_fin_filename)
                     logging.info("FIN_CREATED type=file_count file=%s content=%d", args.file_count_fin_filename, len(blobs))
                     upload_atomic(sftp, fin_path, remote_fin, args.overwrite)
-                    logging.info("SFTP_FIN_COMPLETE type=file_count file=%s", remote_fin)
+                    logging.info("SFTP_FIN_COMPLETE type=file_count file=%s content=%d", remote_fin, len(blobs))
                 finally:
                     fin_path.unlink(missing_ok=True)
             if args.delete_source:
+                logging.info("GCS_SOURCE_DELETE_START files=%d", len(blobs))
                 for blob in blobs:
+                    logging.info("GCS_SOURCE_DELETE file=%s", blob.name)
                     blob.delete()
-            logging.info("JOB_COMPLETE result=SUCCESS source_files=%d rows=%d", len(blobs), merged_rows)
+                logging.info("GCS_SOURCE_DELETE_COMPLETE deleted=%d", len(blobs))
+            else:
+                logging.info("GCS_SOURCE_DELETE_SKIPPED files=%d", len(blobs))
+            logging.info(
+                "JOB_COMPLETE result=SUCCESS source_files=%d rows=%d row_count_fin=%s file_count_fin=%s",
+                len(blobs), merged_rows, args.fin_filename or "-", args.file_count_fin_filename or "-",
+            )
             return 0
 
         uploaded: list[str] = []
