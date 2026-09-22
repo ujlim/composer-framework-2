@@ -250,11 +250,12 @@ def main() -> int:
     parser.add_argument("--csv-header", action="store_true")
     parser.add_argument("--csv-encoding", default="utf-8")
     parser.add_argument("--fin-filename")
+    parser.add_argument("--file-count-fin-filename")
     args = parser.parse_args()
 
     config = load_config()
     setup_logging(config)
-    logging.info("TRANSFER_MODE mode=%s merge_filename=%s csv_header=%s csv_encoding=%s fin_filename=%s", "MERGE" if args.merge_filename else "NORMAL", args.merge_filename or "-", args.csv_header, args.csv_encoding, args.fin_filename or "-")
+    logging.info("TRANSFER_MODE mode=%s merge_filename=%s csv_header=%s csv_encoding=%s fin_filename=%s file_count_fin_filename=%s", "MERGE" if args.merge_filename else "NORMAL", args.merge_filename or "-", args.csv_header, args.csv_encoding, args.fin_filename or "-", args.file_count_fin_filename or "-")
     runner = config.get("runner") or {}
     temp_dir = Path(runner.get("temp_dir", DEFAULT_TEMP_DIR))
     temp_dir.mkdir(parents=True, exist_ok=True)
@@ -291,7 +292,19 @@ def main() -> int:
                     remote_fin = posixpath.join(args.remote_dir.rstrip("/"), args.fin_filename)
                     logging.info("FIN_CREATED file=%s content=%d", args.fin_filename, merged_rows)
                     upload_atomic(sftp, fin_path, remote_fin, args.overwrite)
-                    logging.info("SFTP_FIN_COMPLETE file=%s", remote_fin)
+                    logging.info("SFTP_FIN_COMPLETE type=row_count file=%s", remote_fin)
+                finally:
+                    fin_path.unlink(missing_ok=True)
+            if args.file_count_fin_filename:
+                fd, fin_name = tempfile.mkstemp(prefix="sftp-runner-file-count-fin-", dir=temp_dir)
+                os.close(fd)
+                fin_path = Path(fin_name)
+                try:
+                    fin_path.write_text(f"{len(blobs)}\n", encoding="utf-8")
+                    remote_fin = posixpath.join(args.remote_dir.rstrip("/"), args.file_count_fin_filename)
+                    logging.info("FIN_CREATED type=file_count file=%s content=%d", args.file_count_fin_filename, len(blobs))
+                    upload_atomic(sftp, fin_path, remote_fin, args.overwrite)
+                    logging.info("SFTP_FIN_COMPLETE type=file_count file=%s", remote_fin)
                 finally:
                     fin_path.unlink(missing_ok=True)
             if args.delete_source:
