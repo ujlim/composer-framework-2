@@ -107,7 +107,12 @@ def delete_gcs_object(
     hook = GCSHook(gcp_conn_id=gcp_conn_id, impersonation_chain=impersonation_chain)
 
     if object_name:
-        candidates = [object_name]
+        # Keep single-object delete semantics consistent with pattern delete:
+        # a missing object must flow through the common ignore_if_missing handling.
+        if hook.exists(bucket_name=bucket, object_name=object_name):
+            candidates = [object_name]
+        else:
+            candidates = []
         mode = "object"
         requested = object_name
     else:
