@@ -154,6 +154,8 @@ def merge_gcs_csv(
     delete_source: bool = False,
     allow_empty: bool = False,
     overwrite: bool = False,
+    fin_filename: str | None = None,
+    file_count_fin_filename: str | None = None,
     gcp_conn_id: str = "google_cloud_default",
     impersonation_chain: str | list[str] | None = None,
 ) -> dict[str, Any]:
@@ -245,6 +247,32 @@ def merge_gcs_csv(
         bucket, destination_object, len(objects), merged_rows, uploaded.size,
     )
 
+    # FIN files describe the final merged data object in GCS.
+    # row-count FIN = merged data rows; file-count FIN = final data object count (1).
+    fin_objects: list[str] = []
+    for fin_type, fin_name, fin_content in (
+        ("row_count", fin_filename, merged_rows),
+        ("file_count", file_count_fin_filename, 1),
+    ):
+        if fin_name is None:
+            continue
+        fin_name = _require_gcs_name(fin_name, f"{fin_type}_fin_filename").lstrip("/")
+        fin_blob = bucket_obj.blob(fin_name)
+        if fin_blob.exists() and not overwrite:
+            raise FileExistsError(
+                f"FIN object already exists: gs://{bucket}/{fin_name}. Set overwrite=true to replace it."
+            )
+        logging.info(
+            "GCS_FIN_CREATE_START type=%s object=gs://%s/%s content=%d",
+            fin_type, bucket, fin_name, fin_content,
+        )
+        fin_blob.upload_from_string(f"{fin_content}\n", content_type="text/plain")
+        logging.info(
+            "GCS_FIN_CREATE_COMPLETE type=%s object=gs://%s/%s content=%d",
+            fin_type, bucket, fin_name, fin_content,
+        )
+        fin_objects.append(fin_name)
+
     deleted_count = 0
     if delete_source:
         logging.info("GCS_MERGE_SOURCE_DELETE_START files=%d", len(objects))
@@ -263,6 +291,9 @@ def merge_gcs_csv(
         "source_count": len(objects),
         "merged_object": destination_object,
         "merged_rows": merged_rows,
+        "row_count_fin": fin_filename,
+        "file_count_fin": file_count_fin_filename,
+        "fin_objects": fin_objects,
         "deleted_count": deleted_count,
     }
 
@@ -410,6 +441,8 @@ class GCSExecutor:
                 "delete_source": bool(options.get("delete_source", False)),
                 "allow_empty": bool(options.get("allow_empty", False)),
                 "overwrite": bool(options.get("overwrite", False)),
+                "fin_filename": options.get("fin_filename"),
+                "file_count_fin_filename": options.get("file_count_fin_filename"),
                 **common,
             }
         else:
