@@ -3,7 +3,12 @@
 
 from __future__ import annotations
 
+import csv
+import fnmatch
+import logging
+import tempfile
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 from airflow.providers.google.cloud.hooks.gcs import GCSHook
@@ -39,10 +44,7 @@ def copy_gcs_object(
     destination_bucket = _require_gcs_name(destination_bucket, "destination_bucket")
     destination_object = _require_gcs_name(destination_object, "destination_object").lstrip("/")
 
-    hook = GCSHook(
-        gcp_conn_id=gcp_conn_id,
-        impersonation_chain=impersonation_chain,
-    )
+    hook = GCSHook(gcp_conn_id=gcp_conn_id, impersonation_chain=impersonation_chain)
     client = hook.get_conn()
     source_bucket_obj = client.bucket(source_bucket)
     destination_bucket_obj = client.bucket(destination_bucket)
@@ -88,35 +90,180 @@ def copy_gcs_object(
 def delete_gcs_object(
     *,
     bucket: str,
-    object_name: str,
+    object_name: str | None = None,
+    object_pattern: str | None = None,
     ignore_if_missing: bool = False,
     gcp_conn_id: str = "google_cloud_default",
     impersonation_chain: str | list[str] | None = None,
 ) -> dict[str, Any]:
-    """Delete exactly one GCS object."""
+    """Delete one object or multiple objects matched by a glob pattern such as *.csv."""
     bucket = _require_gcs_name(bucket, "bucket")
-    object_name = _require_gcs_name(object_name, "object_name").lstrip("/")
+    object_name = str(object_name or "").lstrip("/")
+    object_pattern = str(object_pattern or "").lstrip("/")
 
-    hook = GCSHook(
-        gcp_conn_id=gcp_conn_id,
-        impersonation_chain=impersonation_chain,
-    )
-    client = hook.get_conn()
-    blob = client.bucket(bucket).get_blob(object_name)
+    if bool(object_name) == bool(object_pattern):
+        raise ValueError("Specify exactly one of source.object or source.pattern")
 
-    if blob is None:
+    hook = GCSHook(gcp_conn_id=gcp_conn_id, impersonation_chain=impersonation_chain)
+
+    if object_name:
+        candidates = [object_name]
+        mode = "object"
+        requested = object_name
+    else:
+        wildcard_pos = min(
+            [pos for token in ("*", "?", "[") if (pos := object_pattern.find(token)) >= 0],
+            default=len(object_pattern),
+        )
+        static_part = object_pattern[:wildcard_pos]
+        prefix = static_part.rsplit("/", 1)[0] + "/" if "/" in static_part else ""
+        listed = [name for name in hook.list(bucket_name=bucket, prefix=prefix) if not name.endswith("/")]
+        candidates = sorted(name for name in listed if fnmatch.fnmatchcase(name, object_pattern))
+        mode = "pattern"
+        requested = object_pattern
+
+    if not candidates:
+        logging.info("GCS_DELETE_MATCH_NONE bucket=%s %s=%s", bucket, mode, requested)
         if ignore_if_missing:
-            return {
-                "object": f"gs://{bucket}/{object_name}",
-                "deleted": False,
-                "reason": "not_found",
-            }
-        raise FileNotFoundError(f"GCS object does not exist: gs://{bucket}/{object_name}")
+            return {"bucket": bucket, "requested": requested, "matched_count": 0, "deleted_count": 0}
+        raise FileNotFoundError(f"No GCS objects matched: gs://{bucket}/{requested}")
 
-    hook.delete(bucket_name=bucket, object_name=object_name)
+    logging.info("GCS_DELETE_MATCH bucket=%s %s=%s matched=%d", bucket, mode, requested, len(candidates))
+    for name in candidates:
+        logging.info("GCS_DELETE_OBJECT_START object=gs://%s/%s", bucket, name)
+        hook.delete(bucket_name=bucket, object_name=name)
+        logging.info("GCS_DELETE_OBJECT_COMPLETE object=gs://%s/%s", bucket, name)
+
     return {
-        "object": f"gs://{bucket}/{object_name}",
-        "deleted": True,
+        "bucket": bucket,
+        "requested": requested,
+        "matched_count": len(candidates),
+        "deleted_count": len(candidates),
+        "deleted_objects": candidates,
+    }
+
+
+def merge_gcs_csv(
+    *,
+    bucket: str,
+    source_prefix: str,
+    destination_object: str,
+    pattern: str = "*.csv",
+    csv_header: bool = True,
+    csv_encoding: str = "utf-8",
+    delete_source: bool = False,
+    allow_empty: bool = False,
+    overwrite: bool = False,
+    gcp_conn_id: str = "google_cloud_default",
+    impersonation_chain: str | list[str] | None = None,
+) -> dict[str, Any]:
+    """Merge CSV objects in GCS into one GCS object without SFTP transfer."""
+    bucket = _require_gcs_name(bucket, "bucket")
+    source_prefix = _normalize_prefix(_require_gcs_name(source_prefix, "source_prefix"))
+    destination_object = _require_gcs_name(destination_object, "destination_object").lstrip("/")
+    pattern = _require_gcs_name(pattern, "pattern")
+    csv_encoding = _require_gcs_name(csv_encoding, "csv_encoding")
+    if not source_prefix:
+        raise ValueError("source_prefix must not be empty; refusing a whole-bucket merge")
+
+    hook = GCSHook(gcp_conn_id=gcp_conn_id, impersonation_chain=impersonation_chain)
+    client = hook.get_conn()
+    bucket_obj = client.bucket(bucket)
+
+    objects = []
+    for name in hook.list(bucket_name=bucket, prefix=source_prefix):
+        if name.endswith("/") or name == destination_object:
+            continue
+        relative = name[len(source_prefix):].lstrip("/")
+        if fnmatch.fnmatchcase(relative, pattern) or fnmatch.fnmatchcase(name, pattern):
+            objects.append(name)
+    objects = sorted(objects)
+
+    if not objects:
+        logging.info("GCS_MERGE_SOURCE_NONE bucket=%s prefix=%s pattern=%s", bucket, source_prefix, pattern)
+        if allow_empty:
+            return {"source_count": 0, "merged_rows": 0, "deleted_count": 0}
+        raise FileNotFoundError(
+            f"No GCS objects matched gs://{bucket}/{source_prefix} pattern={pattern}"
+        )
+
+    destination_blob = bucket_obj.blob(destination_object)
+    if destination_blob.exists() and not overwrite:
+        raise FileExistsError(
+            f"Destination already exists: gs://{bucket}/{destination_object}. Set overwrite=true to replace it."
+        )
+
+    logging.info(
+        "GCS_MERGE_START bucket=%s prefix=%s pattern=%s source_files=%d destination=gs://%s/%s delete_source=%s",
+        bucket, source_prefix, pattern, len(objects), bucket, destination_object, delete_source,
+    )
+    for name in objects:
+        logging.info("GCS_MERGE_SOURCE object=gs://%s/%s", bucket, name)
+
+    source_total = 0
+    header_written = False
+    with tempfile.TemporaryDirectory(prefix="gcs-merge-") as temp_dir:
+        merged_path = Path(temp_dir) / "merged.csv"
+        with merged_path.open("w", encoding=csv_encoding, newline="") as out_fh:
+            writer = csv.writer(out_fh, lineterminator="\n")
+            for index, name in enumerate(objects, start=1):
+                part_path = Path(temp_dir) / f"part-{index:06d}.csv"
+                bucket_obj.blob(name).download_to_filename(str(part_path))
+                row_count = 0
+                with part_path.open("r", encoding=csv_encoding, newline="") as in_fh:
+                    reader = csv.reader(in_fh)
+                    for row_index, row in enumerate(reader):
+                        if csv_header and row_index == 0:
+                            if not header_written:
+                                writer.writerow(row)
+                                header_written = True
+                            continue
+                        writer.writerow(row)
+                        row_count += 1
+                source_total += row_count
+                logging.info("GCS_MERGE_SOURCE_COMPLETE object=gs://%s/%s rows=%d", bucket, name, row_count)
+
+        merged_rows = 0
+        with merged_path.open("r", encoding=csv_encoding, newline="") as merged_fh:
+            total_lines = sum(1 for _ in csv.reader(merged_fh))
+            merged_rows = max(0, total_lines - (1 if csv_header and total_lines else 0))
+
+        if source_total != merged_rows:
+            logging.error("GCS_MERGE_ROW_VERIFICATION source_rows=%d merged_rows=%d result=FAIL", source_total, merged_rows)
+            raise RuntimeError(
+                f"GCS CSV merge row verification failed: source_rows={source_total}, merged_rows={merged_rows}"
+            )
+        logging.info("GCS_MERGE_ROW_VERIFICATION source_rows=%d merged_rows=%d result=PASS", source_total, merged_rows)
+
+        destination_blob.upload_from_filename(str(merged_path))
+
+    uploaded = bucket_obj.get_blob(destination_object)
+    if uploaded is None:
+        raise RuntimeError(f"Merged object was not found after upload: gs://{bucket}/{destination_object}")
+    logging.info(
+        "GCS_MERGE_COMPLETE destination=gs://%s/%s source_files=%d rows=%d size=%s",
+        bucket, destination_object, len(objects), merged_rows, uploaded.size,
+    )
+
+    deleted_count = 0
+    if delete_source:
+        logging.info("GCS_MERGE_SOURCE_DELETE_START files=%d", len(objects))
+        for name in objects:
+            logging.info("GCS_MERGE_SOURCE_DELETE object=gs://%s/%s", bucket, name)
+            hook.delete(bucket_name=bucket, object_name=name)
+            deleted_count += 1
+        logging.info("GCS_MERGE_SOURCE_DELETE_COMPLETE deleted=%d", deleted_count)
+    else:
+        logging.info("GCS_MERGE_SOURCE_DELETE_SKIPPED files=%d", len(objects))
+
+    return {
+        "bucket": bucket,
+        "source_prefix": source_prefix,
+        "pattern": pattern,
+        "source_count": len(objects),
+        "merged_object": destination_object,
+        "merged_rows": merged_rows,
+        "deleted_count": deleted_count,
     }
 
 
@@ -141,10 +288,7 @@ def move_gcs_prefix(
     if not source_prefix:
         raise ValueError("source_prefix must not be empty; refusing a whole-bucket move")
 
-    hook = GCSHook(
-        gcp_conn_id=gcp_conn_id,
-        impersonation_chain=impersonation_chain,
-    )
+    hook = GCSHook(gcp_conn_id=gcp_conn_id, impersonation_chain=impersonation_chain)
     objects = [name for name in hook.list(bucket_name=source_bucket, prefix=source_prefix) if not name.endswith("/")]
     if not objects:
         if allow_empty:
@@ -216,7 +360,7 @@ class GCSExecutor:
     ) -> PythonOperator:
         grape_id = validate_airflow_id(grape.get("grape_id"), "grape.grape_id")
         grape_type = grape.get("type")
-        if grape_type not in {"gcs_copy_object", "gcs_delete_object", "gcs_move_prefix"}:
+        if grape_type not in {"gcs_copy_object", "gcs_delete_object", "gcs_move_prefix", "gcs_merge_csv"}:
             raise ValueError(f"Unsupported GCS grape type: {grape_type}")
 
         options = merge_dicts(defaults, grape.get("options", {}))
@@ -247,7 +391,25 @@ class GCSExecutor:
             op_kwargs = {
                 "bucket": source.get("bucket"),
                 "object_name": source.get("object"),
+                "object_pattern": source.get("pattern"),
                 "ignore_if_missing": bool(options.get("ignore_if_missing", False)),
+                **common,
+            }
+        elif grape_type == "gcs_merge_csv":
+            destination = grape.get("destination") or {}
+            if not isinstance(destination, dict):
+                raise ValueError(f"{grape_id}: destination must be a mapping")
+            python_callable = merge_gcs_csv
+            op_kwargs = {
+                "bucket": source.get("bucket"),
+                "source_prefix": source.get("prefix"),
+                "destination_object": destination.get("object"),
+                "pattern": source.get("pattern", "*.csv"),
+                "csv_header": bool(options.get("csv_header", True)),
+                "csv_encoding": options.get("csv_encoding", "utf-8"),
+                "delete_source": bool(options.get("delete_source", False)),
+                "allow_empty": bool(options.get("allow_empty", False)),
+                "overwrite": bool(options.get("overwrite", False)),
                 **common,
             }
         else:
