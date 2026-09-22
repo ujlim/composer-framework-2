@@ -305,11 +305,11 @@ def main() -> int:
                 os.close(fd)
                 fin_path = Path(fin_name)
                 try:
-                    fin_path.write_text(f"{len(blobs)}\n", encoding="utf-8")
+                    fin_path.write_text("1\n", encoding="utf-8")
                     remote_fin = posixpath.join(args.remote_dir.rstrip("/"), args.file_count_fin_filename)
-                    logging.info("FIN_CREATED type=file_count file=%s content=%d", args.file_count_fin_filename, len(blobs))
+                    logging.info("FIN_CREATED type=file_count file=%s content=%d", args.file_count_fin_filename, 1)
                     upload_atomic(sftp, fin_path, remote_fin, args.overwrite)
-                    logging.info("SFTP_FIN_COMPLETE type=file_count file=%s content=%d", remote_fin, len(blobs))
+                    logging.info("SFTP_FIN_COMPLETE type=file_count file=%s content=%d", remote_fin, 1)
                 finally:
                     fin_path.unlink(missing_ok=True)
             if args.delete_source:
