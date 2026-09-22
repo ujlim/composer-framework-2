@@ -42,3 +42,9 @@ grapes:
       overwrite: true
       delete_source: false
       allow_empty: false
+
+      # merged CSV의 데이터 row 수를 기록하는 FIN
+      fin_filename: "merged/outbound_row_count_{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}.fin"
+
+      # GCS에 최종 생성된 데이터 파일 수를 기록하는 FIN (merge이므로 1)
+      file_count_fin_filename: "merged/outbound_file_count_{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}.fin"
