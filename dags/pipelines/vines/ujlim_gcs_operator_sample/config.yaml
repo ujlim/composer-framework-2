@@ -49,3 +49,29 @@ grapes:
     options:
       # true이면 재실행 시 이미 삭제된 객체 때문에 실패하지 않습니다.
       ignore_if_missing: true
+
+
+  # 여러 CSV 삭제: source.pattern은 glob 패턴을 지원합니다.
+  - grape_id: delete_csv_objects
+    type: gcs_delete_object
+    source:
+      bucket: REPLACE_WITH_SOURCE_BUCKET
+      pattern: "sample/{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}/*.csv"
+    options:
+      ignore_if_missing: true
+
+  # SFTP 없이 GCS 안에서 여러 CSV를 하나로 merge합니다.
+  - grape_id: merge_csv_in_gcs
+    type: gcs_merge_csv
+    source:
+      bucket: REPLACE_WITH_SOURCE_BUCKET
+      prefix: "sample/{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}/"
+      pattern: "*.csv"
+    destination:
+      object: "sample/{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}/merged.csv"
+    options:
+      csv_header: true
+      csv_encoding: utf-8
+      overwrite: true
+      delete_source: false
+      allow_empty: false
