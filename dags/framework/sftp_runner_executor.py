@@ -62,6 +62,7 @@ class SftpRunnerExecutor:
         csv_header = options.get("csv_header")
         csv_encoding = options.get("csv_encoding", "utf-8")
         fin_filename = options.get("fin_filename")
+        file_count_fin_filename = options.get("file_count_fin_filename")
         merge = options.get("merge") or {}
         if merge_filename is None and bool(merge.get("enabled", False)):
             merge_filename = destination.get("filename") or merge.get("filename")
@@ -91,6 +92,10 @@ class SftpRunnerExecutor:
                 if not isinstance(fin_filename, str) or not fin_filename.strip():
                     raise ValueError(f"{grape_id}: options.fin_filename must be a non-empty string")
                 command += " --fin-filename " + _arg(fin_filename)
+            if file_count_fin_filename is not None:
+                if not isinstance(file_count_fin_filename, str) or not file_count_fin_filename.strip():
+                    raise ValueError(f"{grape_id}: options.file_count_fin_filename must be a non-empty string")
+                command += " --file-count-fin-filename " + _arg(file_count_fin_filename)
 
         timeout_seconds = int(options.get("execution_timeout_seconds", 7200))
         return SSHOperator(task_id=grape_id, ssh_conn_id=ssh_conn_id, command=command, conn_timeout=int(options.get("conn_timeout_seconds", 30)), cmd_timeout=timeout_seconds, get_pty=False, retries=int(options.get("retries", 1)), retry_delay=timedelta(seconds=int(options.get("retry_delay_seconds", 300))), execution_timeout=timedelta(seconds=timeout_seconds), pool=options.get("pool"), priority_weight=int(options.get("priority_weight", 1)), on_success_callback=task_success_callback, on_failure_callback=task_failure_callback, dag=dag)
