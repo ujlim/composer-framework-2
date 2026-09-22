@@ -125,7 +125,18 @@ def delete_gcs_object(
     if not candidates:
         logging.info("GCS_DELETE_MATCH_NONE bucket=%s %s=%s", bucket, mode, requested)
         if ignore_if_missing:
-            return {"bucket": bucket, "requested": requested, "matched_count": 0, "deleted_count": 0}
+            logging.info(
+                "GCS_DELETE_SKIPPED reason=NO_MATCH ignore_if_missing=true bucket=%s %s=%s",
+                bucket, mode, requested,
+            )
+            return {
+                "bucket": bucket,
+                "requested": requested,
+                "matched_count": 0,
+                "deleted_count": 0,
+                "skipped": True,
+                "skip_reason": "NO_MATCH",
+            }
         raise FileNotFoundError(f"No GCS objects matched: gs://{bucket}/{requested}")
 
     logging.info("GCS_DELETE_MATCH bucket=%s %s=%s matched=%d", bucket, mode, requested, len(candidates))
