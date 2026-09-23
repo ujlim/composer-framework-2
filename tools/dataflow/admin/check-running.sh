@@ -111,3 +111,11 @@ gcloud logging read \
   "resource.type=\"dataflow_step\" AND resource.labels.job_id=\"${JOB_ID}\"" \
   --project="${PROJECT_ID}" --order=asc --limit="${LOG_LIMIT}" \
   --format="value(timestamp,severity,logName,textPayload,jsonPayload.message)"
+
+
+echo
+echo "===== [8] JDBC QUERY RESULT ====="
+gcloud logging read \
+  "resource.type=\"dataflow_step\" AND resource.labels.job_id=\"${JOB_ID}\" AND (textPayload:\"JDBC QUERY RESULT\" OR jsonPayload.message:\"JDBC QUERY RESULT\")" \
+  --project="${PROJECT_ID}" --order=asc --limit="${LOG_LIMIT}" \
+  --format="value(timestamp,textPayload,jsonPayload.message)"
