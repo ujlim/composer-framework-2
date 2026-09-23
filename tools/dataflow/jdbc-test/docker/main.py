@@ -29,7 +29,7 @@ DRIVER_CLASS = {
 class LogResult(beam.DoFn):
     def process(self, element):
         logging.info("JDBC CONNECTION TEST SUCCESS")
-        logging.info("DATABASE RESULT: %s", element)
+        logging.info("=== JDBC QUERY RESULT === %s", element)
         yield element
 
 
