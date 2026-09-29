@@ -66,7 +66,7 @@ class RootFactory:
             start_date=start_date,
             catchup=bool(root.get("catchup", False)),
             max_active_runs=int(root.get("max_active_runs", 1)),
-            dagrun_timeout=timedelta(seconds=int(root.get("dagrun_timeout_seconds", 43200))),
+            dagrun_timeout=timedelta(seconds=int(root.get("dagrun_timeout_seconds", 86400))),
             tags=list(dict.fromkeys(["root", *root.get("tags", [])])),
             default_args={"owner": root.get("owner", "batch-integration")},
             params={
