@@ -7,8 +7,10 @@ import logging
 import apache_beam as beam
 from apache_beam.io.gcp.bigquery import WriteToBigQuery
 from apache_beam.io.jdbc import ReadFromJdbc
+from apache_beam.io.parquetio import WriteToParquet
 from apache_beam.options.pipeline_options import PipelineOptions
 from google.cloud import secretmanager, storage
+import pyarrow as pa
 
 DRIVER_CLASS = {
     "db2": "com.ibm.db2.jcc.DB2Driver",
@@ -47,6 +49,38 @@ def row_csv(row):
     return buf.getvalue()
 
 
+PARQUET_TYPES = {
+    "STRING": pa.string(),
+    "BYTES": pa.binary(),
+    "BOOL": pa.bool_(),
+    "BOOLEAN": pa.bool_(),
+    "INT64": pa.int64(),
+    "INTEGER": pa.int64(),
+    "FLOAT64": pa.float64(),
+    "FLOAT": pa.float64(),
+    "DATE": pa.date32(),
+    "TIMESTAMP": pa.timestamp("us"),
+    "NUMERIC": pa.decimal128(38, 9),
+    "BIGNUMERIC": pa.decimal256(76, 38),
+}
+
+
+def parquet_schema(schema_json: str):
+    doc = json.loads(schema_json)
+    fields = doc.get("fields", doc if isinstance(doc, list) else [])
+    result = []
+    for field in fields:
+        field_type = str(field["type"]).upper()
+        if field_type not in PARQUET_TYPES:
+            raise ValueError(f"Unsupported parquet schema type: {field_type}")
+        result.append(pa.field(
+            field["name"],
+            PARQUET_TYPES[field_type],
+            nullable=str(field.get("mode", "NULLABLE")).upper() != "REQUIRED",
+        ))
+    return pa.schema(result)
+
+
 def run():
     parser = argparse.ArgumentParser()
     parser.add_argument("--db_type", required=True, choices=["db2", "oracle", "vertica"])
@@ -57,7 +91,8 @@ def run():
     parser.add_argument("--query_uri", required=True)
     parser.add_argument("--destination_type", required=True, choices=["gcs", "bigquery"])
     parser.add_argument("--output_path")
-    parser.add_argument("--output_format", default="json", choices=["json", "csv"])
+    parser.add_argument("--output_format", default="json", choices=["json", "csv", "parquet"])
+    parser.add_argument("--parquet_schema")
     parser.add_argument("--output_table")
     parser.add_argument("--bq_schema")
     parser.add_argument("--write_disposition", default="WRITE_APPEND")
@@ -83,13 +118,26 @@ def run():
         if args.destination_type == "gcs":
             if not args.output_path:
                 raise ValueError("output_path is required for GCS destination")
-            formatter = row_json if args.output_format == "json" else row_csv
-            suffix = ".jsonl" if args.output_format == "json" else ".csv"
-            (
-                rows
-                | "Format GCS Rows" >> beam.Map(formatter)
-                | "Write GCS" >> beam.io.WriteToText(args.output_path, file_name_suffix=suffix)
-            )
+            if args.output_format == "parquet":
+                if not args.parquet_schema:
+                    raise ValueError("parquet_schema is required for parquet output")
+                (
+                    rows
+                    | "To Parquet Dict" >> beam.Map(row_dict)
+                    | "Write GCS Parquet" >> WriteToParquet(
+                        args.output_path,
+                        schema=parquet_schema(args.parquet_schema),
+                        file_name_suffix=".parquet",
+                    )
+                )
+            else:
+                formatter = row_json if args.output_format == "json" else row_csv
+                suffix = ".jsonl" if args.output_format == "json" else ".csv"
+                (
+                    rows
+                    | "Format GCS Rows" >> beam.Map(formatter)
+                    | "Write GCS Text" >> beam.io.WriteToText(args.output_path, file_name_suffix=suffix)
+                )
         else:
             if not args.output_table or not args.bq_schema:
                 raise ValueError("output_table and bq_schema are required for BigQuery destination")
