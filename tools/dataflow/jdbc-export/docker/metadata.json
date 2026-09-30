@@ -1,0 +1,14 @@
+{
+  "name": "UBIS JDBC Export",
+  "description": "Reads DB2, Oracle, or Vertica by JDBC and writes to GCS or BigQuery.",
+  "streaming": false,
+  "parameters": [
+    {"name":"db_type","label":"Database Type","regexes":["^(db2|oracle|vertica)$"]},
+    {"name":"connection_url","label":"JDBC Connection URL"},
+    {"name":"username","label":"Database Username"},
+    {"name":"password_secret","label":"Secret Manager Password Resource"},
+    {"name":"driver_jars","label":"JDBC Driver JAR"},
+    {"name":"query_uri","label":"Rendered SQL GCS URI"},
+    {"name":"destination_type","label":"Destination Type","regexes":["^(gcs|bigquery)$"]}
+  ]
+}
