@@ -16,6 +16,7 @@ from framework.bigquery_executor import BigQueryExecutor
 from framework.business_date import resolve_vine_business_date
 from framework.fin_file_sensor_executor import FinFileSensorExecutor
 from framework.gcs_executor import GCSExecutor
+from framework.dataflow_executor import DataflowExecutor
 from framework.logger import dag_failure_callback, dag_success_callback, task_failure_callback, task_success_callback
 from framework.models import LoadedConfig
 from framework.postgres_executor import PostgresExecutor
@@ -110,6 +111,14 @@ class VineFactory:
                 )
             elif grape_type in {"gcs_copy_object", "gcs_delete_object", "gcs_move_prefix", "gcs_merge_csv"}:
                 task = GCSExecutor.create_task(dag=dag, grape=grape, runtime=runtime, defaults=defaults)
+            elif grape_type in {"jdbc_to_gcs", "jdbc_to_bigquery"}:
+                task = DataflowExecutor.create_task(
+                    dag=dag,
+                    vine_config=self.config,
+                    grape=grape,
+                    runtime=runtime,
+                    defaults=defaults,
+                )
             elif grape_type in {"postgres_sql", "postgres_to_gcs"}:
                 task = PostgresExecutor.create_task(
                     dag=dag,
