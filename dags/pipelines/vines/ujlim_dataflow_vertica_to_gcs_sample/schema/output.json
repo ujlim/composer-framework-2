@@ -1,0 +1,6 @@
+{
+  "fields": [
+    {"name": "business_date", "type": "DATE", "mode": "NULLABLE"},
+    {"name": "current_ts", "type": "TIMESTAMP", "mode": "NULLABLE"}
+  ]
+}
