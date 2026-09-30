@@ -1,0 +1,2 @@
+apache-beam[gcp]==2.75.0
+google-cloud-secret-manager>=2.20.0
