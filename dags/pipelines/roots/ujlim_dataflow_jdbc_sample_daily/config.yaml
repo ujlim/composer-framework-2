@@ -1,0 +1,34 @@
+version: 1
+
+root:
+  root_id: ujlim_dataflow_jdbc_sample_daily
+  description: Daily sample for DB2 Oracle Vertica JDBC exports to GCS and BigQuery
+  owner: framework-test
+  schedule: "0 2 * * *"
+  timezone: Asia/Seoul
+  start_date: "2026-01-01"
+  catchup: false
+  max_active_runs: 1
+  dagrun_timeout_seconds: 28800
+  tags: [sample, dataflow, jdbc, gcs, bigquery]
+
+business_date:
+  type: daily
+  source: data_interval_end
+  offset_days: -1
+  timezone: Asia/Seoul
+
+defaults:
+  wait_for_completion: true
+  poke_interval_seconds: 30
+  execution_timeout_seconds: 25200
+  reset_dag_run: false
+  deferrable: true
+
+vines:
+  - vine_id: ujlim_dataflow_db2_to_gcs_sample
+  - vine_id: ujlim_dataflow_db2_to_bq_sample
+  - vine_id: ujlim_dataflow_oracle_to_gcs_sample
+  - vine_id: ujlim_dataflow_oracle_to_bq_sample
+  - vine_id: ujlim_dataflow_vertica_to_gcs_sample
+  - vine_id: ujlim_dataflow_vertica_to_bq_sample
