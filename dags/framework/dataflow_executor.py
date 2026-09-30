@@ -117,6 +117,8 @@ class DataflowJdbcOperator(BaseOperator):
                 "output_path": str(self.destination["path"]),
                 "output_format": str(self.destination.get("format", "json")),
             })
+            if self.destination.get("format") == "parquet":
+                parameters["parquet_schema"] = str(self.destination["schema"])
         else:
             parameters.update({
                 "output_table": str(self.destination["table"]),
@@ -200,6 +202,16 @@ class DataflowExecutor:
         if grape_type == "jdbc_to_gcs":
             if not destination.get("path"):
                 raise ValueError(f"{grape_id}: destination.path is required")
+            output_format = str(destination.get("format", "json")).lower()
+            if output_format not in {"json", "csv", "parquet"}:
+                raise ValueError(f"{grape_id}: destination.format must be json, csv, or parquet")
+            destination = {**destination, "format": output_format}
+            if output_format == "parquet":
+                schema_file = destination.get("schema_file")
+                if not schema_file:
+                    raise ValueError(f"{grape_id}: destination.schema_file is required for parquet")
+                schema = json.loads(read_text(resolve_child_file(vine_config.base_dir, schema_file)))
+                destination = {**destination, "schema": json.dumps(schema, separators=(",", ":"))}
             destination_type = "gcs"
         else:
             if not destination.get("table"):
