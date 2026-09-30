@@ -9,6 +9,12 @@
     {"name":"password_secret","label":"Secret Manager Password Resource"},
     {"name":"driver_jars","label":"JDBC Driver JAR"},
     {"name":"query_uri","label":"Rendered SQL GCS URI"},
-    {"name":"destination_type","label":"Destination Type","regexes":["^(gcs|bigquery)$"]}
+    {"name":"destination_type","label":"Destination Type","regexes":["^(gcs|bigquery)$"]},
+    {"name":"output_path","label":"GCS Output Prefix","isOptional":true},
+    {"name":"output_format","label":"GCS Output Format","isOptional":true,"regexes":["^(json|csv)$"]},
+    {"name":"output_table","label":"BigQuery Output Table","isOptional":true},
+    {"name":"bq_schema","label":"BigQuery Schema JSON","isOptional":true},
+    {"name":"write_disposition","label":"BigQuery Write Disposition","isOptional":true},
+    {"name":"create_disposition","label":"BigQuery Create Disposition","isOptional":true}
   ]
 }
