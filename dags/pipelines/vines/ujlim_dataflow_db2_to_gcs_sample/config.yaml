@@ -44,4 +44,5 @@ grapes:
     sql_file: sql/010_export_sample.sql
     destination:
       path: "gs://REPLACE_WITH_OUTPUT_BUCKET/dataflow/db2/business_date={{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}/part"
-      format: json
+      format: parquet
+      schema_file: schema/output.json
