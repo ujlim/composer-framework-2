@@ -1,6 +1,6 @@
 {
   "fields": [
-    {"name": "BUSINESS_DATE", "type": "DATE", "mode": "NULLABLE"},
-    {"name": "CURRENT_TS", "type": "TIMESTAMP", "mode": "NULLABLE"}
+    {"name": "business_date", "type": "DATE", "mode": "NULLABLE"},
+    {"name": "current_ts", "type": "TIMESTAMP", "mode": "NULLABLE"}
   ]
 }
