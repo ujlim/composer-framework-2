@@ -1,0 +1,49 @@
+version: 1
+
+vine:
+  vine_id: ujlim_dataflow_vertica_to_bq_sample
+  description: Dataflow VERTICA JDBC export sample
+  owner: framework-test
+  schedule: null
+  timezone: Asia/Seoul
+  start_date: "2026-01-01"
+  max_active_runs: 1
+  dagrun_timeout_seconds: 21600
+  tags: [sample, dataflow, jdbc, vertica, bq]
+
+business_date:
+  type: daily
+
+runtime:
+  gcp_conn_id: google_cloud_default
+  dataflow:
+    project_id: gcp-prod-edp-sa-udw
+    region: asia-northeast3
+    system_bucket: bucket-prod-sa-udw-dataflow-system-1
+    template_gcs_path: gs://bucket-prod-sa-udw-dataflow-system-1/templates/jdbc-export/template.json
+    subnetwork: https://www.googleapis.com/compute/v1/projects/REPLACE_WITH_SHARED_VPC_HOST_PROJECT/regions/asia-northeast3/subnetworks/subnet-prod-hub-int-sa-ubi-dataflow-1
+    service_account_email: sa-prod-sa-udw-dataflow-worker@gcp-prod-edp-sa-udw.iam.gserviceaccount.com
+
+grape_defaults:
+  retries: 1
+  retry_delay_seconds: 60
+  execution_timeout_seconds: 21600
+  poll_interval_seconds: 30
+  pool: default_pool
+  priority_weight: 1
+
+grapes:
+  - grape_id: export_vertica_to_bq
+    type: jdbc_to_bigquery
+    source:
+      db_type: vertica
+      connection_id: conn-dataflow-vertica
+      driver_jars: gs://bucket-prod-sa-udw-dataflow-system-1/drivers/vertica/vertica-jdbc-25.3.0-0.jar
+      # Recommended: put password_secret in Airflow Connection extra.
+      # Example: {"password_secret":"projects/PROJECT_ID/secrets/SECRET_NAME"}
+    sql_file: sql/010_export_sample.sql
+    destination:
+      table: "gcp-prod-edp-sa-udw:REPLACE_WITH_DATASET.ujlim_vertica_jdbc_sample"
+      schema_file: schema/output.json
+      write_disposition: WRITE_APPEND
+      create_disposition: CREATE_IF_NEEDED
