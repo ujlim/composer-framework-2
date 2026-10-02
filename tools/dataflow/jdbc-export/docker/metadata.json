@@ -3,19 +3,91 @@
   "description": "Reads DB2, Oracle, or Vertica by JDBC and writes to GCS or BigQuery.",
   "streaming": false,
   "parameters": [
-    {"name":"db_type","label":"Database Type","regexes":["^(db2|oracle|vertica)$"]},
-    {"name":"connection_url","label":"JDBC Connection URL"},
-    {"name":"username","label":"Database Username"},
-    {"name":"password_secret","label":"Secret Manager Password Resource"},
-    {"name":"driver_jars","label":"JDBC Driver JAR"},
-    {"name":"query_uri","label":"Rendered SQL GCS URI"},
-    {"name":"destination_type","label":"Destination Type","regexes":["^(gcs|bigquery)$"]},
-    {"name":"output_path","label":"GCS Output Prefix","isOptional":true},
-    {"name":"output_format","label":"GCS Output Format","isOptional":true,"regexes":["^(json|csv|parquet)$"]},
-    {"name":"parquet_schema","label":"Parquet Schema JSON","isOptional":true},
-    {"name":"output_table","label":"BigQuery Output Table","isOptional":true},
-    {"name":"bq_schema","label":"BigQuery Schema JSON","isOptional":true},
-    {"name":"write_disposition","label":"BigQuery Write Disposition","isOptional":true},
-    {"name":"create_disposition","label":"BigQuery Create Disposition","isOptional":true}
+    {
+      "name": "db_type",
+      "label": "Database Type",
+      "regexes": [
+        "^(db2|oracle|vertica)$"
+      ],
+      "helpText": "Source database type: db2, oracle, or vertica."
+    },
+    {
+      "name": "connection_url",
+      "label": "JDBC Connection URL",
+      "helpText": "JDBC connection URL for the source database."
+    },
+    {
+      "name": "username",
+      "label": "Database Username",
+      "helpText": "Database login username."
+    },
+    {
+      "name": "password_secret",
+      "label": "Secret Manager Password Resource",
+      "helpText": "Secret Manager resource name containing the database password."
+    },
+    {
+      "name": "driver_jars",
+      "label": "JDBC Driver JAR",
+      "helpText": "GCS URI of the JDBC driver JAR."
+    },
+    {
+      "name": "query_uri",
+      "label": "Rendered SQL GCS URI",
+      "helpText": "GCS URI of the business-date rendered SQL file."
+    },
+    {
+      "name": "destination_type",
+      "label": "Destination Type",
+      "regexes": [
+        "^(gcs|bigquery)$"
+      ],
+      "helpText": "Output destination: gcs or bigquery."
+    },
+    {
+      "name": "output_path",
+      "label": "GCS Output Prefix",
+      "isOptional": true,
+      "helpText": "GCS output prefix. Required when destination_type is gcs."
+    },
+    {
+      "name": "output_format",
+      "label": "GCS Output Format",
+      "isOptional": true,
+      "regexes": [
+        "^(json|csv|parquet)$"
+      ],
+      "helpText": "GCS output format: json, csv, or parquet."
+    },
+    {
+      "name": "parquet_schema",
+      "label": "Parquet Schema JSON",
+      "isOptional": true,
+      "helpText": "JSON schema used for Parquet output. Required when output_format is parquet."
+    },
+    {
+      "name": "output_table",
+      "label": "BigQuery Output Table",
+      "isOptional": true,
+      "helpText": "BigQuery table in project:dataset.table form. Required for BigQuery output."
+    },
+    {
+      "name": "bq_schema",
+      "label": "BigQuery Schema JSON",
+      "isOptional": true,
+      "helpText": "BigQuery schema JSON. Required for BigQuery output."
+    },
+    {
+      "name": "write_disposition",
+      "label": "BigQuery Write Disposition",
+      "isOptional": true,
+      "helpText": "BigQuery write disposition, for example WRITE_APPEND."
+    },
+    {
+      "name": "create_disposition",
+      "label": "BigQuery Create Disposition",
+      "isOptional": true,
+      "helpText": "BigQuery create disposition, for example CREATE_IF_NEEDED."
+    }
   ]
 }
