@@ -5,6 +5,7 @@ import json
 import logging
 
 import apache_beam as beam
+import google.auth
 from apache_beam.io.gcp.bigquery import WriteToBigQuery
 from apache_beam.io.jdbc import ReadFromJdbc
 from apache_beam.io.parquetio import WriteToParquet
@@ -98,6 +99,15 @@ def run():
     parser.add_argument("--write_disposition", default="WRITE_APPEND")
     parser.add_argument("--create_disposition", default="CREATE_IF_NEEDED")
     args, pipeline_args = parser.parse_known_args()
+
+    credentials, adc_project_id = google.auth.default()
+    logging.info(
+        "ADC credential type=%s project=%s service_account_email=%s",
+        type(credentials).__name__,
+        adc_project_id,
+        getattr(credentials, "service_account_email", None),
+    )
+    logging.info("Accessing password secret: %s", args.password_secret)
 
     query = read_gcs_text(args.query_uri)
     password = access_secret(args.password_secret)
