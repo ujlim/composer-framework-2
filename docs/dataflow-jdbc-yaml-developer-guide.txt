@@ -1,0 +1,677 @@
+UBIS Composer Framework - Dataflow JDBC YAML 개발자 가이드
+========================================================
+대상 브랜치: feature/26.0921.dataflow
+대상 기능: DB2 / Oracle / Vertica -> BigQuery 또는 GCS
+대상 Template: gs://bucket-prod-sa-udw-dataflow-system-1/templates/jdbc-export/template.json
+
+1. 목적
+-------
+Dataflow JDBC grape는 Composer/Airflow에서 SQL을 렌더링한 뒤 GCS에 저장하고,
+Flex Template을 실행하여 DB2 / Oracle / Vertica 데이터를 읽어 BigQuery 또는 GCS로 적재한다.
+
+기본 흐름:
+
+  Vine YAML
+    -> Airflow Connection 조회
+    -> SQL 템플릿 렌더링
+    -> system_bucket/sql/... 에 SQL 업로드
+    -> Dataflow Flex Template 실행
+    -> JDBC Read
+    -> BigQuery 또는 GCS Write
+
+개발자는 일반적으로 다음 3개 파일을 작성한다.
+
+  <vine_id>/
+    config.yaml
+    sql/
+      010_export.sql
+    schema/
+      output.json
+
+BigQuery 적재와 Parquet 출력은 schema/output.json이 필수다.
+
+
+2. 지원 grape type
+-------------------
+1) jdbc_to_bigquery
+   - DB2 / Oracle / Vertica -> BigQuery
+
+2) jdbc_to_gcs
+   - DB2 / Oracle / Vertica -> GCS
+   - format: json / csv / parquet
+   - parquet 사용 시 schema_file 필수
+
+
+3. 기본 Vine YAML 구조
+----------------------
+
+version: 1
+
+vine:
+  vine_id: my_dataflow_jdbc_vine
+  description: Dataflow JDBC export
+  owner: my-team
+  schedule: null
+  timezone: Asia/Seoul
+  start_date: "2026-01-01"
+  max_active_runs: 1
+  dagrun_timeout_seconds: 21600
+  tags: [dataflow, jdbc]
+
+business_date:
+  type: daily
+
+runtime:
+  gcp_conn_id: google_cloud_default
+  dataflow:
+    project_id: gcp-prod-edp-sa-udw
+    region: asia-northeast3
+    system_bucket: bucket-prod-sa-udw-dataflow-system-1
+    template_gcs_path: gs://bucket-prod-sa-udw-dataflow-system-1/templates/jdbc-export/template.json
+    subnetwork: https://www.googleapis.com/compute/v1/projects/<SHARED_VPC_HOST_PROJECT>/regions/asia-northeast3/subnetworks/subnet-prod-hub-int-sa-ubi-dataflow-1
+    service_account_email: sa-prod-sa-udw-dataflow-worker@gcp-prod-edp-sa-udw.iam.gserviceaccount.com
+
+grape_defaults:
+  retries: 1
+  retry_delay_seconds: 60
+  execution_timeout_seconds: 21600
+  poll_interval_seconds: 30
+  pool: default_pool
+  priority_weight: 1
+
+grapes:
+  - grape_id: export_db_to_bq
+    type: jdbc_to_bigquery
+
+    source:
+      db_type: db2
+      connection_id: conn-dataflow-db2
+      driver_jars: gs://bucket-prod-sa-udw-dataflow-system-1/drivers/db2/db2jcc4.jar
+
+    sql_file: sql/010_export.sql
+
+    destination:
+      table: "gcp-prod-edp-sa-udw:DATASET.TABLE"
+      schema_file: schema/output.json
+      write_disposition: WRITE_APPEND
+      create_disposition: CREATE_IF_NEEDED
+
+
+4. runtime.dataflow 항목
+------------------------
+
+project_id
+  Dataflow Job이 실행되는 서비스 프로젝트.
+
+region
+  Dataflow region.
+  현재 표준: asia-northeast3
+
+system_bucket
+  Dataflow SQL staging, temp, template 등의 시스템 파일 저장 버킷.
+  "gs://" 없이 bucket 이름만 지정한다.
+
+template_gcs_path
+  Flex Template spec 경로.
+  예:
+  gs://bucket-prod-sa-udw-dataflow-system-1/templates/jdbc-export/template.json
+
+subnetwork
+  Shared VPC subnet의 전체 Compute API URI를 사용한다.
+  프로젝트 placeholder를 남겨 두지 않는다.
+
+  예:
+  https://www.googleapis.com/compute/v1/projects/<HOST_PROJECT>/regions/asia-northeast3/subnetworks/<SUBNET>
+
+service_account_email
+  Dataflow launcher/worker가 사용할 Service Account.
+  현재 표준:
+  sa-prod-sa-udw-dataflow-worker@gcp-prod-edp-sa-udw.iam.gserviceaccount.com
+
+staging_location / temp_location
+  생략 가능.
+  생략 시 framework가 아래와 같이 생성한다.
+
+    gs://<system_bucket>/staging
+    gs://<system_bucket>/temp
+
+gcp_conn_id
+  Composer에서 Google API를 호출할 Airflow Connection.
+  기본값: google_cloud_default
+
+
+5. source 항목
+--------------
+
+db_type
+  허용값:
+    db2
+    oracle
+    vertica
+
+connection_id
+  Airflow Connection ID.
+  DB host / port / database(schema) / login 정보는 여기에서 읽는다.
+
+driver_jars
+  JDBC Driver JAR의 GCS 경로.
+
+  DB2:
+    gs://.../drivers/db2/db2jcc4.jar
+
+  Oracle:
+    gs://.../drivers/oracle/ojdbc11.jar
+
+  Vertica:
+    gs://.../drivers/vertica/vertica-jdbc-25.3.0-0.jar
+
+password_secret
+  YAML에 직접 지정할 수도 있지만 권장 방식은 Airflow Connection extra에 넣는 것이다.
+
+  권장 extra 예:
+
+    {
+      "password_secret":
+        "projects/gcp-prod-edp-sa-udw/secrets/secret-db-password-xxxx"
+    }
+
+중요:
+  Secret resource의 PROJECT_ID가 실제 Secret이 존재하는 프로젝트와 정확히 같아야 한다.
+
+  잘못된 예:
+    projects/gcp-prod-edp-sa-ubi/secrets/secret-...
+
+  실제 Secret이 UDW 프로젝트에 있다면:
+    projects/gcp-prod-edp-sa-udw/secrets/secret-...
+
+프로젝트 ID가 틀리면 Service Account에 권한이 있어도
+secretmanager.versions.access 403이 발생한다.
+
+DB password 자체는 YAML이나 Dataflow parameter에 평문으로 넣지 않는다.
+
+
+6. Airflow Connection 규칙
+---------------------------
+
+Framework는 connection_id로 Airflow Connection을 조회한다.
+
+필수:
+  login
+  host
+  schema
+  port
+  extra.password_secret
+
+기본 JDBC URL:
+
+DB2
+  jdbc:db2://<host>:<port>/<schema>
+  기본 port: 50000
+
+Oracle
+  jdbc:oracle:thin:@//<host>:<port>/<schema>
+  기본 port: 1521
+
+Vertica
+  jdbc:vertica://<host>:<port>/<schema>
+  기본 port: 5433
+
+특수 JDBC URL이 필요한 경우 Connection extra에 jdbc_url을 지정할 수 있다.
+
+  {
+    "jdbc_url": "jdbc:....",
+    "password_secret": "projects/.../secrets/..."
+  }
+
+
+7. SQL 파일과 business_date
+----------------------------
+
+sql_file은 Vine 디렉터리 기준 상대 경로이다.
+
+예:
+  sql_file: sql/010_export.sql
+
+SQL은 Airflow template rendering 대상이므로 business_date를 사용할 수 있다.
+
+예:
+
+  {{ ti.xcom_pull(task_ids="resolve_business_date")["business_date"] }}
+
+DB별 예:
+
+DB2
+  '{{ ti.xcom_pull(task_ids="resolve_business_date")["business_date"] }}'
+
+Oracle
+  '{{ ti.xcom_pull(task_ids="resolve_business_date")["business_date"] }}'
+
+Vertica
+  '{{ ti.xcom_pull(task_ids="resolve_business_date")["business_date"] }}'
+
+렌더링된 SQL은 framework가 system_bucket에 업로드하고,
+Dataflow에는 query_uri만 전달한다.
+
+
+8. BigQuery Destination YAML
+-----------------------------
+
+grapes:
+  - grape_id: export_db2_to_bq
+    type: jdbc_to_bigquery
+
+    source:
+      db_type: db2
+      connection_id: conn-dataflow-db2
+      driver_jars: gs://bucket-prod-sa-udw-dataflow-system-1/drivers/db2/db2jcc4.jar
+
+    sql_file: sql/010_export.sql
+
+    destination:
+      table: "gcp-prod-edp-sa-udw:my_dataset.my_table"
+      schema_file: schema/output.json
+      write_disposition: WRITE_APPEND
+      create_disposition: CREATE_IF_NEEDED
+
+table 형식:
+  PROJECT:DATASET.TABLE
+
+schema_file:
+  필수.
+
+write_disposition:
+  일반적으로 WRITE_APPEND
+  필요 시 WRITE_TRUNCATE 등을 사용할 수 있다.
+
+create_disposition:
+  일반적으로 CREATE_IF_NEEDED
+
+
+9. GCS Destination YAML
+------------------------
+
+JSON:
+
+destination:
+  path: "gs://my-output/data/business_date={{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}/part"
+  format: json
+
+CSV:
+
+destination:
+  path: "gs://my-output/data/business_date={{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}/part"
+  format: csv
+
+Parquet:
+
+destination:
+  path: "gs://my-output/data/business_date={{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}/part"
+  format: parquet
+  schema_file: schema/output.json
+
+Parquet만 schema_file이 필수다.
+
+
+10. schema/output.json
+----------------------
+
+BigQuery 예:
+
+{
+  "fields": [
+    {"name": "business_date", "type": "DATE",      "mode": "NULLABLE"},
+    {"name": "current_ts",    "type": "TIMESTAMP", "mode": "NULLABLE"},
+    {"name": "amount",        "type": "NUMERIC",   "mode": "NULLABLE"},
+    {"name": "name",          "type": "STRING",    "mode": "NULLABLE"}
+  ]
+}
+
+주의:
+  SQL 결과 컬럼명과 schema의 name을 동일하게 유지한다.
+
+현재 Parquet schema 변환에서 지원하는 타입:
+
+  STRING
+  BYTES
+  BOOL / BOOLEAN
+  INT64 / INTEGER
+  FLOAT64 / FLOAT
+  DATE
+  TIMESTAMP
+  NUMERIC
+  BIGNUMERIC
+
+현재 구현 기준:
+  NUMERIC    -> decimal128(38, 9)
+  BIGNUMERIC -> decimal256(76, 38)
+
+Nested / RECORD / REPEATED 구조는 현재 기본 사용 대상으로 보지 않는다.
+
+
+11. 가장 중요한 규칙 - JDBC 데이터 타입 정규화
+-----------------------------------------------
+
+Dataflow JDBC에서는 "DB에서 SQL이 실행된다"는 것과
+"Apache Beam JDBC Row가 그 값을 안전하게 변환한다"는 것이 별개의 문제다.
+
+DB에서 정상 SELECT가 되더라도 JDBC Driver -> Beam Row 변환에서 실패할 수 있다.
+
+대표 오류:
+
+  com.ibm.db2.jcc.am.SqlSyntaxErrorException
+  Invalid data conversion
+  ERRORCODE=-4461
+  SQLSTATE=42815
+
+이 오류는 실제 테스트에서 DB2 native DATE / TIMESTAMP를 그대로 읽을 때 발생했다.
+
+따라서 운영 SQL에서는 DB 고유 타입을 그대로 노출하기보다
+Beam이 안정적으로 읽을 수 있는 표준 타입으로 SQL에서 정규화하는 것을 권장한다.
+
+
+12. DB2 데이터 변환 주의
+-------------------------
+
+A. DATE / TIMESTAMP
+
+피해야 할 예:
+
+  SELECT
+    DATE('2026-10-05') AS business_date,
+    CURRENT TIMESTAMP AS current_ts
+  FROM SYSIBM.SYSDUMMY1
+
+위 형태는 DB2 자체에서는 정상이나 Beam JDBC 변환에서
+ERRORCODE=-4461 / SQLSTATE=42815가 발생할 수 있다.
+
+권장:
+
+  SELECT
+    VARCHAR_FORMAT(
+      DATE('{{ ti.xcom_pull(task_ids="resolve_business_date")["business_date"] }}'),
+      'YYYY-MM-DD'
+    ) AS business_date,
+
+    VARCHAR_FORMAT(
+      CURRENT TIMESTAMP,
+      'YYYY-MM-DD HH24:MI:SS.FF6'
+    ) AS current_ts
+  FROM SYSIBM.SYSDUMMY1
+
+JDBC에서는 STRING으로 안전하게 읽고,
+BigQuery schema에서는 DATE / TIMESTAMP로 정의하는 방식을 권장한다.
+
+B. DECFLOAT
+
+고정 정밀도가 필요하면:
+
+  CAST(my_decfloat AS DECIMAL(38, 9)) AS my_decfloat
+
+근사값 사용이 허용되면:
+
+  CAST(my_decfloat AS DOUBLE) AS my_decfloat
+
+C. CLOB / DBCLOB / GRAPHIC 계열
+
+데이터 길이가 허용되는 범위에서 VARCHAR 계열로 정규화한다.
+
+예:
+  CAST(my_clob AS VARCHAR(32000)) AS my_clob
+
+대용량 LOB/BLOB/XML은 직접 JDBC Row로 전달하기 전에 별도 검토한다.
+
+
+13. Oracle 데이터 변환 주의
+----------------------------
+
+A. DATE
+
+Oracle DATE는 날짜뿐 아니라 시/분/초도 포함할 수 있으므로
+목적 스키마가 BigQuery DATE인지 TIMESTAMP인지 명확히 한다.
+
+날짜만 필요할 때는 문자열 정규화를 권장한다.
+
+  TO_CHAR(my_date, 'YYYY-MM-DD') AS my_date
+
+B. TIMESTAMP / TIMESTAMP WITH TIME ZONE
+
+timezone이 있는 타입은 목적 timezone 정책을 정한 후
+UTC 또는 명시적 문자열로 정규화하는 것을 권장한다.
+
+예:
+  TO_CHAR(my_timestamp, 'YYYY-MM-DD HH24:MI:SS.FF6') AS my_timestamp
+
+C. NUMBER
+
+정밀도/scale이 정의되지 않은 NUMBER는 Beam/BQ 타입 추론에 맡기지 말고
+업무 정의에 맞게 명확한 precision/scale로 CAST한다.
+
+예:
+  CAST(amount AS NUMBER(38, 9)) AS amount
+
+D. CLOB / BLOB
+
+일반 문자열로 사용해야 하는 CLOB은 크기를 확인한 뒤 VARCHAR 계열로 변환한다.
+BLOB은 직접 문자열 변환하지 말고 BYTES 처리 또는 별도 파일 처리 정책을 정한다.
+
+
+14. Vertica 데이터 변환 주의
+-----------------------------
+
+A. TIMESTAMP / TIMESTAMPTZ
+
+TIMESTAMPTZ는 timezone 의미를 유지할지 UTC로 정규화할지 먼저 정의한다.
+이기종 적재에서는 문자열 또는 표준 TIMESTAMP로 명확하게 변환하는 편이 안전하다.
+
+B. NUMERIC / DECIMAL
+
+BigQuery NUMERIC 범위를 넘을 수 있는 고정밀 숫자는
+정밀도를 확인하여 NUMERIC / BIGNUMERIC / STRING 중 하나로 명시적으로 정규화한다.
+
+C. LONG VARCHAR / LONG VARBINARY
+
+큰 컬럼은 Dataflow Row 크기와 BigQuery 행 크기를 고려한다.
+필요하면 SQL에서 길이를 제한하거나 별도 파일 적재 방식을 검토한다.
+
+
+15. 권장 타입 전략
+-------------------
+
+원칙:
+
+  Source DB native type
+      -> SQL에서 표준화
+      -> JDBC / Beam 안전 타입
+      -> BigQuery 또는 Parquet 최종 타입
+
+권장 예:
+
+DB 날짜/시간
+  -> YYYY-MM-DD 또는 표준 timestamp 문자열
+  -> Beam STRING
+  -> BQ DATE / TIMESTAMP
+
+DB 고정정밀 숫자
+  -> DECIMAL(p,s)로 명시
+  -> Beam Decimal
+  -> BQ NUMERIC/BIGNUMERIC
+
+DB 특수 문자/LOB
+  -> VARCHAR / STRING으로 명시
+  -> Beam STRING
+  -> BQ STRING
+
+이 방식은 DB2 / Oracle / Vertica 공통 이미지와 Template을 유지하면서
+DB별 JDBC 차이를 SQL 계층에서 흡수할 수 있다는 장점이 있다.
+
+
+16. Secret Manager / IAM 주의
+------------------------------
+
+Dataflow Service Account에는 대상 Secret에 다음 권한이 필요하다.
+
+  roles/secretmanager.secretAccessor
+
+현재 표준 worker SA:
+  sa-prod-sa-udw-dataflow-worker@gcp-prod-edp-sa-udw.iam.gserviceaccount.com
+
+중요:
+  권한을 준 Secret과 password_secret이 가리키는 Secret이 반드시 동일해야 한다.
+  Secret 이름뿐 아니라 project ID까지 확인한다.
+
+403 발생 시 확인 순서:
+
+  1) password_secret project ID
+  2) secret name
+  3) worker SA
+  4) secretAccessor binding
+  5) Secret version 존재 여부
+
+
+17. Private Dataflow 환경 주의
+-------------------------------
+
+현재 환경은 private worker 사용을 전제로 한다.
+
+Framework가 Dataflow launch 시 다음을 사용한다.
+
+  ipConfiguration: WORKER_IP_PRIVATE
+  subnetwork: runtime.dataflow.subnetwork
+  serviceAccountEmail: runtime.dataflow.service_account_email
+
+따라서 개발자는 YAML에 정확한 Shared VPC subnet 전체 URI를 넣어야 한다.
+
+Template/Image 운영 주의:
+  Python dependency는 이미지 build 시 설치하는 것이 기본이다.
+  private runtime에서 PyPI를 다시 조회하게 하는 설정은 피한다.
+
+현재 이미지에서는 FLEX_TEMPLATE_PYTHON_REQUIREMENTS_FILE을 사용하지 않아
+launcher가 runtime에 pip download를 다시 수행하지 않도록 구성한다.
+
+이미지/Template 빌드는 플랫폼 운영 범위이며,
+일반 Vine 개발자는 기존 template_gcs_path를 사용한다.
+
+
+18. grape_defaults / options
+-----------------------------
+
+공통 기본값:
+
+grape_defaults:
+  retries: 1
+  retry_delay_seconds: 60
+  execution_timeout_seconds: 21600
+  poll_interval_seconds: 30
+  pool: default_pool
+  priority_weight: 1
+
+개별 grape에서 options로 override 가능하다.
+
+예:
+
+grapes:
+  - grape_id: export_large_table
+    type: jdbc_to_bigquery
+
+    ...
+
+    options:
+      retries: 2
+      retry_delay_seconds: 120
+      execution_timeout_seconds: 28800
+      poll_interval_seconds: 30
+      pool: dataflow_pool
+      priority_weight: 10
+      job_name_prefix: export-large-table
+
+
+19. 개발 체크리스트
+--------------------
+
+[ ] vine_id / grape_id가 Airflow ID 규칙에 맞는가
+[ ] db_type이 db2/oracle/vertica 중 하나인가
+[ ] connection_id가 실제 Airflow Connection과 일치하는가
+[ ] connection login/host/port/schema가 맞는가
+[ ] extra.password_secret의 project ID와 Secret 위치가 일치하는가
+[ ] worker SA에 secretAccessor가 있는가
+[ ] driver_jars GCS 경로가 실제 존재하는가
+[ ] sql_file이 Vine 하위 실제 파일인가
+[ ] business_date Jinja 표현식이 올바른가
+[ ] DATE/TIMESTAMP/NUMERIC/LOB 등 특수 타입을 검토했는가
+[ ] BigQuery table이 PROJECT:DATASET.TABLE 형식인가
+[ ] schema_file 컬럼명/타입이 SQL 결과와 일치하는가
+[ ] Parquet이면 schema_file이 존재하는가
+[ ] subnetwork의 Shared VPC host project와 subnet 이름이 정확한가
+[ ] template_gcs_path가 현재 운영 Template 경로인가
+[ ] placeholder(REPLACE_WITH_...)가 남아 있지 않은가
+
+
+20. 오류별 빠른 판단
+---------------------
+
+A. secretmanager.versions.access 403
+   -> password_secret project/name 또는 IAM 확인
+
+B. Flex Template "Timeout in polling result file"
+   -> launcher 단계 확인
+   -> runtime dependency download, Template container, expansion service 등을 확인
+
+C. Job은 RUNNING 되었지만 JDBC worker에서 실패
+   -> DB 접속/SQL/JDBC 타입 변환 확인
+
+D. DB2 ERRORCODE=-4461 / SQLSTATE=42815
+   -> JDBC 타입 변환 문제
+   -> DATE/TIMESTAMP/특수 타입을 SQL에서 VARCHAR/DECIMAL 등으로 정규화
+
+E. BigQuery load 단계에서 schema 오류
+   -> output.json과 SQL alias/type 확인
+
+
+21. 현재 Sample Vine
+---------------------
+
+DB2 -> BigQuery
+  dags/pipelines/vines/ujlim_dataflow_db2_to_bq_sample/
+
+DB2 -> GCS
+  dags/pipelines/vines/ujlim_dataflow_db2_to_gcs_sample/
+
+Oracle -> BigQuery
+  dags/pipelines/vines/ujlim_dataflow_oracle_to_bq_sample/
+
+Oracle -> GCS
+  dags/pipelines/vines/ujlim_dataflow_oracle_to_gcs_sample/
+
+Vertica -> BigQuery
+  dags/pipelines/vines/ujlim_dataflow_vertica_to_bq_sample/
+
+Vertica -> GCS
+  dags/pipelines/vines/ujlim_dataflow_vertica_to_gcs_sample/
+
+
+22. 권장 개발 순서
+-------------------
+
+1) 기존 DB별 sample Vine을 복사한다.
+2) vine_id / grape_id를 변경한다.
+3) connection_id / driver_jars를 확인한다.
+4) SQL을 작성한다.
+5) SQL 결과 타입을 DB별 규칙으로 정규화한다.
+6) output.json을 SQL alias와 정확히 맞춘다.
+7) destination table/path를 설정한다.
+8) placeholder를 모두 제거한다.
+9) 소량 SQL로 먼저 실행한다.
+10) Dataflow Worker가 RUNNING 되고 결과가 정상 적재되는지 확인한다.
+11) 운영 SQL/대용량 SQL로 확장한다.
+
+
+[핵심 요약]
+
+- 이미지와 Flex Template은 DB2 / Oracle / Vertica 공통으로 사용한다.
+- DB별 차이는 JDBC driver와 SQL 타입 정규화에서 처리한다.
+- 비밀번호는 Secret Manager resource로 관리하고 YAML에 평문 저장하지 않는다.
+- DB2 DATE/TIMESTAMP는 Beam JDBC 변환 오류(-4461)가 발생할 수 있으므로
+  SQL에서 문자열로 정규화 후 BigQuery DATE/TIMESTAMP로 적재하는 패턴을 권장한다.
+- 고정정밀 숫자, timezone, LOB/특수 타입은 DB 고유 타입 그대로 넘기지 말고
+  목적 스키마에 맞는 표준 타입으로 CAST/FORMAT한다.
+- private Dataflow에서는 runtime 외부 package download를 피한다.
