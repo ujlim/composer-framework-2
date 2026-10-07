@@ -2,7 +2,7 @@ version: 1
 
 vine:
   vine_id: ujlim_pg_to_gcs_sample
-  description: Sample Vine for exporting Cloud SQL PostgreSQL query results to GCS using Silver execution SA
+  description: Sample Vine for PostgreSQL to GCS using dedicated DB password secret and Silver execution SA
   owner: framework-test
   schedule: null
   timezone: Asia/Seoul
@@ -16,10 +16,23 @@ business_date:
 
 runtime:
   gcp_conn_id: google_cloud_default
-  # Composer SA impersonates this execution SA. GCS bucket permission belongs to this SA.
-  # Gold example: sa-prod-sa-ubi-airflow-user-gold@gcp-prod-edp-sa-ubi.iam.gserviceaccount.com
+  # GCS access is performed as this Silver SA. Change to Gold SA for Gold workloads.
   impersonation_chain: sa-prod-sa-ubi-airflow-user-silver@gcp-prod-edp-sa-ubi.iam.gserviceaccount.com
   postgres_connection_id: conn-sql-pg-udw-user1
+
+# Airflow Connection conn-sql-pg-udw-user1 stores connection metadata, not the DB password:
+#   host=172.31.38.136
+#   port=21001
+#   schema=db_ubis_rpt
+#   login=usr_airf_svc
+#   extra:
+#     password_project_id: gcp-prod-edp-sa-udw
+#     password_secret_id: secret-db-password-prod-sa-udw-postgres-1-usr_airf_svc-1
+#
+# IAM:
+#   Composer management SA -> password secret: roles/secretmanager.secretAccessor
+#   Composer management SA -> Silver/Gold SA: roles/iam.serviceAccountTokenCreator
+#   Silver/Gold SA -> destination bucket: required Storage object role
 
 grape_defaults:
   retries: 1
