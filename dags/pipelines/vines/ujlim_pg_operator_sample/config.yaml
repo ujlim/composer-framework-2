@@ -2,7 +2,7 @@ version: 1
 
 vine:
   vine_id: ujlim_pg_operator_sample
-  description: Sample Vine for simple Cloud SQL PostgreSQL SQL execution using Secret Manager Airflow Connection
+  description: Sample Vine for simple Cloud SQL PostgreSQL SQL execution with dedicated DB password secret
   owner: framework-test
   schedule: null
   timezone: Asia/Seoul
@@ -16,10 +16,19 @@ business_date:
 
 runtime:
   gcp_conn_id: google_cloud_default
-  # Composer SA impersonates the Silver execution SA.
-  # For a Gold workload, replace silver with gold below.
+  # Used for Google data-service access. The DB password secret itself is read by Composer SA.
   impersonation_chain: sa-prod-sa-ubi-airflow-user-silver@gcp-prod-edp-sa-ubi.iam.gserviceaccount.com
   postgres_connection_id: conn-sql-pg-udw-user1
+
+# Airflow Connection conn-sql-pg-udw-user1 stores connection metadata, not the DB password:
+#   host=172.31.38.136
+#   port=21001
+#   schema=db_ubis_rpt
+#   login=usr_airf_svc
+#   extra:
+#     password_project_id: gcp-prod-edp-sa-udw
+#     password_secret_id: secret-db-password-prod-sa-udw-postgres-1-usr_airf_svc-1
+# Composer management SA requires roles/secretmanager.secretAccessor on that password secret.
 
 grape_defaults:
   retries: 1
