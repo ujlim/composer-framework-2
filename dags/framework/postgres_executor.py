@@ -1,15 +1,15 @@
 # Author: LIM UI JIN
-# Created: 2026-09-16
+# Created: 2026-10-07
 
 from __future__ import annotations
 
 import csv
-import io
 from datetime import timedelta
 from typing import Any
 
 from airflow.hooks.base import BaseHook
 from airflow.providers.google.cloud.hooks.gcs import GCSHook
+from airflow.providers.google.cloud.hooks.secret_manager import SecretManagerHook
 from airflow.providers.standard.operators.python import PythonOperator
 
 from framework.logger import task_failure_callback, task_success_callback
@@ -17,20 +17,44 @@ from framework.models import LoadedConfig
 from framework.utils import merge_dicts, read_text, resolve_child_file, validate_airflow_id
 
 
-def _connect_postgres(conn_id: str, connect_timeout_seconds: int):
+def _get_db_password(conn, gcp_conn_id: str) -> str:
+    """Read DB password from a dedicated Secret Manager secret referenced by Airflow Connection extra."""
+    extra = conn.extra_dejson or {}
+    project_id = extra.get("password_project_id")
+    secret_id = extra.get("password_secret_id")
+    if not project_id or not secret_id:
+        raise ValueError(
+            f"Airflow connection '{conn.conn_id}' must define extra.password_project_id "
+            "and extra.password_secret_id"
+        )
+
+    # Intentionally no impersonation_chain here.
+    # The Composer management SA reads the DB password secret, matching the
+    # Dataflow pattern where the Dataflow worker SA reads the same secret.
+    hook = SecretManagerHook(gcp_conn_id=gcp_conn_id)
+    password = hook.get_secret(secret_id=secret_id, project_id=project_id)
+    if isinstance(password, bytes):
+        password = password.decode("utf-8")
+    password = str(password).rstrip("\r\n")
+    if not password:
+        raise ValueError(f"DB password secret is empty: projects/{project_id}/secrets/{secret_id}")
+    return password
+
+
+def _connect_postgres(conn_id: str, connect_timeout_seconds: int, gcp_conn_id: str):
     if not isinstance(conn_id, str) or not conn_id.strip():
         raise ValueError("connection_id is required")
 
     conn = BaseHook.get_connection(conn_id.strip())
+    extra = conn.extra_dejson or {}
     kwargs = {
         "host": conn.host,
         "port": int(conn.port or 5432),
         "dbname": conn.schema,
         "user": conn.login,
-        "password": conn.password,
+        "password": _get_db_password(conn, gcp_conn_id),
         "connect_timeout": connect_timeout_seconds,
     }
-    extra = conn.extra_dejson or {}
     for optional in ("sslmode", "sslrootcert", "sslcert", "sslkey", "application_name"):
         value = extra.get(optional)
         if value not in (None, ""):
@@ -42,12 +66,10 @@ def _connect_postgres(conn_id: str, connect_timeout_seconds: int):
 
     try:
         import psycopg
-
         return psycopg.connect(**kwargs)
     except ImportError:
         try:
             import psycopg2
-
             return psycopg2.connect(**kwargs)
         except ImportError as exc:
             raise RuntimeError(
@@ -61,12 +83,13 @@ def execute_postgres_sql(
     sql: str,
     parameters: dict[str, Any] | None,
     connection_id: str,
+    gcp_conn_id: str = "google_cloud_default",
     autocommit: bool = False,
     fetch: str = "none",
     max_fetch_rows: int = 100,
     connect_timeout_seconds: int = 30,
 ) -> dict[str, Any]:
-    """Execute PostgreSQL SQL using an Airflow Connection resolved by the configured secrets backend."""
+    """Execute PostgreSQL SQL using connection metadata plus a dedicated password secret."""
     if not isinstance(sql, str) or not sql.strip():
         raise ValueError("sql must not be empty")
     if parameters is not None and not isinstance(parameters, dict):
@@ -78,7 +101,7 @@ def execute_postgres_sql(
     if max_fetch_rows < 1:
         raise ValueError("options.max_fetch_rows must be >= 1")
 
-    connection = _connect_postgres(connection_id, connect_timeout_seconds)
+    connection = _connect_postgres(connection_id, connect_timeout_seconds, gcp_conn_id)
     connection.autocommit = bool(autocommit)
 
     try:
@@ -99,12 +122,7 @@ def execute_postgres_sql(
         if not connection.autocommit:
             connection.commit()
 
-        return {
-            "rowcount": rowcount,
-            "columns": columns,
-            "rows": rows,
-            "fetch_mode": fetch_mode,
-        }
+        return {"rowcount": rowcount, "columns": columns, "rows": rows, "fetch_mode": fetch_mode}
     except Exception:
         if not connection.autocommit:
             connection.rollback()
@@ -126,7 +144,7 @@ def export_postgres_to_gcs(
     connect_timeout_seconds: int = 30,
     include_header: bool = True,
 ) -> dict[str, Any]:
-    """Stream a PostgreSQL query to a CSV object in GCS without fetchall()."""
+    """Export a PostgreSQL query to GCS; DB secret and GCS identities are intentionally separated."""
     if not isinstance(sql, str) or not sql.strip():
         raise ValueError("sql must not be empty")
     if parameters is not None and not isinstance(parameters, dict):
@@ -136,15 +154,17 @@ def export_postgres_to_gcs(
     if chunk_rows < 1:
         raise ValueError("options.chunk_rows must be >= 1")
 
-    connection = _connect_postgres(connection_id, connect_timeout_seconds)
+    connection = _connect_postgres(connection_id, connect_timeout_seconds, gcp_conn_id)
+
+    # GCS access uses Silver/Gold execution SA via impersonation.
     hook = GCSHook(gcp_conn_id=gcp_conn_id, impersonation_chain=impersonation_chain)
 
-    # SpooledTemporaryFile keeps small exports in memory and transparently spills larger files to disk.
     import tempfile
-
     total_rows = 0
     try:
-        with tempfile.SpooledTemporaryFile(mode="w+", max_size=16 * 1024 * 1024, newline="", encoding="utf-8") as tmp:
+        with tempfile.SpooledTemporaryFile(
+            mode="w+", max_size=16 * 1024 * 1024, newline="", encoding="utf-8"
+        ) as tmp:
             writer = csv.writer(tmp)
             with connection.cursor() as cursor:
                 cursor.execute(sql, parameters or None)
@@ -164,11 +184,10 @@ def export_postgres_to_gcs(
 
             tmp.flush()
             tmp.seek(0)
-            payload = tmp.read().encode("utf-8")
             hook.upload(
                 bucket_name=bucket,
                 object_name=object_name.lstrip("/"),
-                data=payload,
+                data=tmp.read().encode("utf-8"),
                 mime_type="text/csv",
             )
     finally:
@@ -182,18 +201,11 @@ def export_postgres_to_gcs(
 
 
 class PostgresExecutor:
-    """Build PostgreSQL SQL and PostgreSQL-to-GCS Grapes using Airflow Connections."""
+    """Build PostgreSQL SQL and PostgreSQL-to-GCS Grapes."""
 
     @classmethod
-    def create_task(
-        cls,
-        *,
-        dag,
-        vine_config: LoadedConfig,
-        grape: dict[str, Any],
-        runtime: dict[str, Any],
-        defaults: dict[str, Any],
-    ) -> PythonOperator:
+    def create_task(cls, *, dag, vine_config: LoadedConfig, grape: dict[str, Any],
+                    runtime: dict[str, Any], defaults: dict[str, Any]) -> PythonOperator:
         grape_id = validate_airflow_id(grape.get("grape_id"), "grape.grape_id")
         grape_type = grape.get("type")
         if grape_type not in {"postgres_sql", "postgres_to_gcs"}:
@@ -202,8 +214,7 @@ class PostgresExecutor:
         sql_file = grape.get("sql_file")
         if not isinstance(sql_file, str) or not sql_file.strip():
             raise ValueError(f"{grape_id}: sql_file is required")
-        sql_path = resolve_child_file(vine_config.base_dir, sql_file)
-        sql = read_text(sql_path)
+        sql = read_text(resolve_child_file(vine_config.base_dir, sql_file))
 
         connection_id = grape.get("connection_id") or runtime.get("postgres_connection_id")
         if not isinstance(connection_id, str) or not connection_id.strip():
@@ -218,6 +229,7 @@ class PostgresExecutor:
             "sql": sql,
             "parameters": parameters,
             "connection_id": connection_id,
+            "gcp_conn_id": runtime.get("gcp_conn_id", "google_cloud_default"),
             "connect_timeout_seconds": int(options.get("connect_timeout_seconds", 30)),
         }
 
@@ -238,7 +250,6 @@ class PostgresExecutor:
                 **common,
                 "bucket": destination.get("bucket"),
                 "object_name": destination.get("object"),
-                "gcp_conn_id": runtime.get("gcp_conn_id", "google_cloud_default"),
                 "impersonation_chain": runtime.get("impersonation_chain"),
                 "chunk_rows": int(options.get("chunk_rows", 5000)),
                 "include_header": bool(options.get("include_header", True)),
