@@ -19,7 +19,9 @@ runtime:
   # Composer SA impersonates the Silver execution SA.
   # For a Gold workload, replace silver with gold below.
   impersonation_chain: sa-prod-sa-ubi-airflow-user-silver@gcp-prod-edp-sa-ubi.iam.gserviceaccount.com
-  postgres_connection_id: conn-sql-pg-udw-user1
+  postgres_connection_id: conn-pg-prod-udw-1-usr_airf_svc-1
+  # Airflow Connection JSON extra.password_secret:
+  # projects/gcp-prod-edp-sa-udw/secrets/secret-db-password-prod-sa-udw-postgres-1-usr_airf_svc-1
 
 grape_defaults:
   retries: 1
