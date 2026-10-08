@@ -9,7 +9,6 @@ from typing import Any
 
 from airflow.hooks.base import BaseHook
 from airflow.providers.google.cloud.hooks.gcs import GCSHook
-from airflow.providers.google.cloud.hooks.secret_manager import SecretManagerHook
 from airflow.providers.standard.operators.python import PythonOperator
 
 from framework.logger import task_failure_callback, task_success_callback
@@ -28,8 +27,10 @@ def _read_password_secret(conn, gcp_conn_id: str) -> str:
     if not match:
         raise ValueError(f"{conn.conn_id}: invalid extra.password_secret resource name")
     project_id, secret_id, version = match.groups()
-    hook = SecretManagerHook(gcp_conn_id=gcp_conn_id)
-    value = hook.get_secret(secret_id=secret_id, project_id=project_id, secret_version=version or "latest")
+    from google.cloud import secretmanager
+    client = secretmanager.SecretManagerServiceClient()
+    name = f"projects/{project_id}/secrets/{secret_id}/versions/{version or 'latest'}"
+    value = client.access_secret_version(request={"name": name}).payload.data
     if isinstance(value, bytes):
         value = value.decode("utf-8")
     if not value:
@@ -157,7 +158,7 @@ def export_postgres_to_gcs(
     if chunk_rows < 1:
         raise ValueError("options.chunk_rows must be >= 1")
 
-    connection = _connect_postgres(connection_id, connect_timeout_seconds)
+    connection = _connect_postgres(connection_id, connect_timeout_seconds, gcp_conn_id)
     hook = GCSHook(gcp_conn_id=gcp_conn_id, impersonation_chain=impersonation_chain)
 
     # SpooledTemporaryFile keeps small exports in memory and transparently spills larger files to disk.
