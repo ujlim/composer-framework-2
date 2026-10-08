@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import csv
-import io
 from datetime import timedelta
 from typing import Any
 
 from airflow.hooks.base import BaseHook
 from airflow.providers.google.cloud.hooks.gcs import GCSHook
+from airflow.providers.google.cloud.hooks.secret_manager import SecretManagerHook
 from airflow.providers.standard.operators.python import PythonOperator
 
 from framework.logger import task_failure_callback, task_success_callback
@@ -17,7 +17,27 @@ from framework.models import LoadedConfig
 from framework.utils import merge_dicts, read_text, resolve_child_file, validate_airflow_id
 
 
-def _connect_postgres(conn_id: str, connect_timeout_seconds: int):
+def _read_password_secret(conn, gcp_conn_id: str) -> str:
+    """Read Dataflow-compatible extra.password_secret with Composer management SA."""
+    extra = conn.extra_dejson or {}
+    resource = extra.get("password_secret")
+    if not isinstance(resource, str):
+        raise ValueError(f"{conn.conn_id}: extra.password_secret is required")
+    import re
+    match = re.fullmatch(r"projects/([^/]+)/secrets/([^/]+)(?:/versions/([^/]+))?", resource)
+    if not match:
+        raise ValueError(f"{conn.conn_id}: invalid extra.password_secret resource name")
+    project_id, secret_id, version = match.groups()
+    hook = SecretManagerHook(gcp_conn_id=gcp_conn_id)
+    value = hook.get_secret(secret_id=secret_id, project_id=project_id, secret_version=version or "latest")
+    if isinstance(value, bytes):
+        value = value.decode("utf-8")
+    if not value:
+        raise ValueError(f"{conn.conn_id}: password secret is empty")
+    return value
+
+
+def _connect_postgres(conn_id: str, connect_timeout_seconds: int, gcp_conn_id: str):
     if not isinstance(conn_id, str) or not conn_id.strip():
         raise ValueError("connection_id is required")
 
@@ -27,7 +47,7 @@ def _connect_postgres(conn_id: str, connect_timeout_seconds: int):
         "port": int(conn.port or 5432),
         "dbname": conn.schema,
         "user": conn.login,
-        "password": conn.password,
+        "password": _read_password_secret(conn, gcp_conn_id),
         "connect_timeout": connect_timeout_seconds,
     }
     extra = conn.extra_dejson or {}
@@ -61,6 +81,7 @@ def execute_postgres_sql(
     sql: str,
     parameters: dict[str, Any] | None,
     connection_id: str,
+    gcp_conn_id: str = "google_cloud_default",
     autocommit: bool = False,
     fetch: str = "none",
     max_fetch_rows: int = 100,
@@ -78,7 +99,7 @@ def execute_postgres_sql(
     if max_fetch_rows < 1:
         raise ValueError("options.max_fetch_rows must be >= 1")
 
-    connection = _connect_postgres(connection_id, connect_timeout_seconds)
+    connection = _connect_postgres(connection_id, connect_timeout_seconds, gcp_conn_id)
     connection.autocommit = bool(autocommit)
 
     try:
@@ -218,6 +239,7 @@ class PostgresExecutor:
             "sql": sql,
             "parameters": parameters,
             "connection_id": connection_id,
+            "gcp_conn_id": runtime.get("gcp_conn_id", "google_cloud_default"),
             "connect_timeout_seconds": int(options.get("connect_timeout_seconds", 30)),
         }
 
@@ -238,7 +260,6 @@ class PostgresExecutor:
                 **common,
                 "bucket": destination.get("bucket"),
                 "object_name": destination.get("object"),
-                "gcp_conn_id": runtime.get("gcp_conn_id", "google_cloud_default"),
                 "impersonation_chain": runtime.get("impersonation_chain"),
                 "chunk_rows": int(options.get("chunk_rows", 5000)),
                 "include_header": bool(options.get("include_header", True)),
