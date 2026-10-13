@@ -51,6 +51,10 @@ class SftpRunnerExecutor:
 
         runner_command = runner.get("command", "/engn/sftp-runner/venv/bin/python /engn/sftp-runner/app/gcs_to_sftp.py")
         command = " ".join([str(runner_command), "--target", _arg(target), "--bucket", _arg(bucket), "--prefix", _arg(prefix), "--remote-dir", _arg(remote_dir)])
+        upload_mode = options.get("upload_mode", "atomic")
+        if upload_mode not in ("atomic", "direct"):
+            raise ValueError(f"{grape_id}: options.upload_mode must be atomic or direct")
+        command += " --upload-mode " + _arg(upload_mode)
         if bool(options.get("allow_empty", False)):
             command += " --allow-empty"
         if bool(options.get("delete_source", False)):
