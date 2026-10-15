@@ -98,6 +98,7 @@ class BigQueryExecutor:
             gcp_conn_id=runtime.get("gcp_conn_id", "google_cloud_default"),
             impersonation_chain=runtime.get("impersonation_chain"),
             deferrable=bool(options.get("deferrable", True)),
+            durable=bool(options.get("durable", False)),
             force_rerun=bool(options.get("force_rerun", False)),
             retries=int(options.get("retries", 1)),
             retry_delay=timedelta(seconds=int(options.get("retry_delay_seconds", 300))),
