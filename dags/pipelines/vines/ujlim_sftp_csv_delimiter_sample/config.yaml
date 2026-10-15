@@ -1,0 +1,95 @@
+version: 1
+
+vine:
+  vine_id: ujlim_sftp_csv_delimiter_sample
+  description: CSV delimiter examples; replace connections and source paths before running
+  owner: framework-test
+  schedule: null
+  timezone: Asia/Seoul
+  start_date: "2026-09-22"
+  max_active_runs: 1
+  dagrun_timeout_seconds: 7200
+  tags: [sample, test, gcs]
+
+business_date:
+  type: daily
+
+runtime:
+  project_id: gcp-prod-edp-sa-ubi
+  location: asia-northeast3
+  gcp_conn_id: google_cloud_default
+  impersonation_chain: null
+
+grape_defaults:
+  retries: 1
+  retry_delay_seconds: 60
+  execution_timeout_seconds: 7200
+  pool: default_pool
+  priority_weight: 1
+
+grapes:
+  - grape_id: merge_comma
+    type: gcs_to_sftp_runner
+    runner:
+      ssh_conn_id: REPLACE_WITH_RUNNER_CONNECTION
+    source:
+      bucket: REPLACE_WITH_SOURCE_BUCKET
+      prefix: "outbound/comma/"
+    destination:
+      target: REPLACE_WITH_SFTP_TARGET
+      remote_dir: "/upload/comma"
+    options:
+      upload_mode: atomic  # direct: no remote remove/rename; non-atomic
+      merge_filename: "comma.csv"
+      csv_header: true
+      csv_encoding: utf-8
+      csv_delimiter: ","
+      fin_filename: "comma_rows.fin"
+      file_count_fin_filename: "comma_files.fin"
+      overwrite: false
+      delete_source: false
+      allow_empty: false
+
+  - grape_id: merge_pipe
+    type: gcs_to_sftp_runner
+    runner:
+      ssh_conn_id: REPLACE_WITH_RUNNER_CONNECTION
+    source:
+      bucket: REPLACE_WITH_SOURCE_BUCKET
+      prefix: "outbound/pipe/"
+    destination:
+      target: REPLACE_WITH_SFTP_TARGET
+      remote_dir: "/upload/pipe"
+    options:
+      upload_mode: atomic  # direct: no remote remove/rename; non-atomic
+      merge_filename: "pipe.csv"
+      csv_header: true
+      csv_encoding: utf-8
+      csv_delimiter: "|"
+      fin_filename: "pipe_rows.fin"
+      file_count_fin_filename: "pipe_files.fin"
+      overwrite: false
+      delete_source: false
+      allow_empty: false
+
+  - grape_id: merge_tab
+    type: gcs_to_sftp_runner
+    runner:
+      ssh_conn_id: REPLACE_WITH_RUNNER_CONNECTION
+    source:
+      bucket: REPLACE_WITH_SOURCE_BUCKET
+      prefix: "outbound/tab/"
+    destination:
+      target: REPLACE_WITH_SFTP_TARGET
+      remote_dir: "/upload/tab"
+    options:
+      upload_mode: atomic  # direct: no remote remove/rename; non-atomic
+      merge_filename: "tab.csv"
+      csv_header: true
+      csv_encoding: utf-8
+      csv_delimiter: "\t"
+      fin_filename: "tab_rows.fin"
+      file_count_fin_filename: "tab_files.fin"
+      overwrite: false
+      delete_source: false
+      allow_empty: false

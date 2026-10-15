@@ -15,7 +15,7 @@ from airflow.providers.google.cloud.hooks.gcs import GCSHook
 from airflow.providers.standard.operators.python import PythonOperator
 
 from framework.logger import task_failure_callback, task_success_callback
-from framework.utils import merge_dicts, validate_airflow_id
+from framework.utils import merge_dicts, validate_airflow_id, validate_csv_delimiter
 
 
 def _normalize_prefix(value: str) -> str:
@@ -167,6 +167,7 @@ def merge_gcs_csv(
     pattern: str = "*.csv",
     csv_header: bool = True,
     csv_encoding: str = "utf-8",
+    csv_delimiter: str = ",",
     delete_source: bool = False,
     allow_empty: bool = False,
     overwrite: bool = False,
@@ -176,6 +177,7 @@ def merge_gcs_csv(
     impersonation_chain: str | list[str] | None = None,
 ) -> dict[str, Any]:
     """Merge CSV objects in GCS into one GCS object without SFTP transfer."""
+    csv_delimiter = validate_csv_delimiter(csv_delimiter)
     bucket = _require_gcs_name(bucket, "bucket")
     source_prefix = _normalize_prefix(_require_gcs_name(source_prefix, "source_prefix"))
     destination_object = _require_gcs_name(destination_object, "destination_object").lstrip("/")
@@ -223,13 +225,13 @@ def merge_gcs_csv(
     with tempfile.TemporaryDirectory(prefix="gcs-merge-") as temp_dir:
         merged_path = Path(temp_dir) / "merged.csv"
         with merged_path.open("w", encoding=csv_encoding, newline="") as out_fh:
-            writer = csv.writer(out_fh, lineterminator="\n")
+            writer = csv.writer(out_fh, delimiter=csv_delimiter, lineterminator="\n")
             for index, name in enumerate(objects, start=1):
                 part_path = Path(temp_dir) / f"part-{index:06d}.csv"
                 bucket_obj.blob(name).download_to_filename(str(part_path))
                 row_count = 0
                 with part_path.open("r", encoding=csv_encoding, newline="") as in_fh:
-                    reader = csv.reader(in_fh)
+                    reader = csv.reader(in_fh, delimiter=csv_delimiter)
                     for row_index, row in enumerate(reader):
                         if csv_header and row_index == 0:
                             if not header_written:
@@ -243,7 +245,7 @@ def merge_gcs_csv(
 
         merged_rows = 0
         with merged_path.open("r", encoding=csv_encoding, newline="") as merged_fh:
-            total_lines = sum(1 for _ in csv.reader(merged_fh))
+            total_lines = sum(1 for _ in csv.reader(merged_fh, delimiter=csv_delimiter))
             merged_rows = max(0, total_lines - (1 if csv_header and total_lines else 0))
 
         if source_total != merged_rows:
@@ -453,6 +455,7 @@ class GCSExecutor:
                 "destination_object": destination.get("object"),
                 "pattern": source.get("pattern", "*.csv"),
                 "csv_header": bool(options.get("csv_header", True)),
+                "csv_delimiter": validate_csv_delimiter(options.get("csv_delimiter", ",")),
                 "csv_encoding": options.get("csv_encoding", "utf-8"),
                 "delete_source": bool(options.get("delete_source", False)),
                 "allow_empty": bool(options.get("allow_empty", False)),

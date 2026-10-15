@@ -113,3 +113,8 @@ Private-key authentication remains supported per target:
   "key_file": "/engn/sftp-runner/conf/keys/onprem-dw"
 }
 ```
+
+
+## CSV delimiters
+
+Both CSV merge operations support `options.csv_delimiter` (default comma). See the [delimiter configuration and rollout guide](user-guide/03-storage-sftp.md#csv-구분자-설정-및-배포-순서) for pipe/tab examples, matching BigQuery export settings, and Runner-first rollout.
