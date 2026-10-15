@@ -164,21 +164,30 @@ def connect(config: dict, target: dict, google_credentials: Any) -> tuple[parami
     raise last_error
 
 
-def count_csv_rows(path: Path, has_header: bool, encoding: str) -> int:
+def validate_csv_delimiter(value: str) -> str:
+    """Standalone Runner counterpart of framework.utils.validate_csv_delimiter."""
+    if not isinstance(value, str) or len(value) != 1 or value in ("\r", "\n", "\0", '"'):
+        raise ValueError("csv_delimiter must be a single character other than CR, LF, NUL or double quote")
+    return value
+
+
+def count_csv_rows(path: Path, has_header: bool, encoding: str, delimiter: str = ",") -> int:
+    delimiter = validate_csv_delimiter(delimiter)
     with path.open("r", encoding=encoding, newline="") as fh:
-        reader = csv.reader(fh)
+        reader = csv.reader(fh, delimiter=delimiter)
         count = sum(1 for _ in reader)
     return max(0, count - (1 if has_header and count else 0))
 
 
-def merge_csv_blobs(blobs: list[Any], temp_dir: Path, has_header: bool, encoding: str) -> tuple[Path, int, list[tuple[str, int]]]:
+def merge_csv_blobs(blobs: list[Any], temp_dir: Path, has_header: bool, encoding: str, delimiter: str = ",") -> tuple[Path, int, list[tuple[str, int]]]:
+    delimiter = validate_csv_delimiter(delimiter)
     fd, merged_name = tempfile.mkstemp(prefix="sftp-runner-merged-", suffix=".csv", dir=temp_dir)
     os.close(fd)
     merged_path = Path(merged_name)
     source_counts: list[tuple[str, int]] = []
     try:
         with merged_path.open("w", encoding=encoding, newline="") as out_fh:
-            writer = csv.writer(out_fh, lineterminator="\n")
+            writer = csv.writer(out_fh, delimiter=delimiter, lineterminator="\n")
             header_written = False
             for blob in sorted(blobs, key=lambda b: b.name):
                 fd, part_name = tempfile.mkstemp(prefix="sftp-runner-part-", suffix=".csv", dir=temp_dir)
@@ -186,11 +195,11 @@ def merge_csv_blobs(blobs: list[Any], temp_dir: Path, has_header: bool, encoding
                 part_path = Path(part_name)
                 try:
                     blob.download_to_filename(str(part_path))
-                    rows = count_csv_rows(part_path, has_header, encoding)
+                    rows = count_csv_rows(part_path, has_header, encoding, delimiter)
                     source_counts.append((blob.name, rows))
                     logging.info("SOURCE_FILE file=%s rows=%d encoding=%s", blob.name, rows, encoding)
                     with part_path.open("r", encoding=encoding, newline="") as in_fh:
-                        reader = csv.reader(in_fh)
+                        reader = csv.reader(in_fh, delimiter=delimiter)
                         first = True
                         for record in reader:
                             if first and has_header:
@@ -204,7 +213,7 @@ def merge_csv_blobs(blobs: list[Any], temp_dir: Path, has_header: bool, encoding
                 finally:
                     part_path.unlink(missing_ok=True)
         source_total = sum(rows for _, rows in source_counts)
-        merged_rows = count_csv_rows(merged_path, has_header, encoding)
+        merged_rows = count_csv_rows(merged_path, has_header, encoding, delimiter)
         logging.info("SOURCE_TOTAL files=%d rows=%d", len(source_counts), source_total)
         logging.info("MERGE_COMPLETE file=%s rows=%d encoding=%s", merged_path.name, merged_rows, encoding)
         if source_total != merged_rows:
@@ -242,6 +251,34 @@ def upload_atomic(sftp: paramiko.SFTPClient, local_path: Path, remote_path: str,
     sftp.rename(uploading_path, remote_path)
 
 
+
+def upload_direct(sftp: paramiko.SFTPClient, local_path: Path, remote_path: str, overwrite: bool) -> None:
+    """Upload directly without remote remove/rename; preserve no-overwrite via exclusive create."""
+    mkdir_p(sftp, posixpath.dirname(remote_path))
+    size = local_path.stat().st_size
+    logging.info("SFTP_DIRECT_START file=%s bytes=%d overwrite=%s", remote_path, size, overwrite)
+    if overwrite:
+        # Truncates an existing file. Requires write permission and is not atomic.
+        with sftp.open(remote_path, "wb") as remote, local_path.open("rb") as local:
+            while chunk := local.read(1024 * 1024):
+                remote.write(chunk)
+    else:
+        # 'x' maps to SSH_FXF_EXCL: concurrent writers cannot silently replace the file.
+        with sftp.open(remote_path, "xb") as remote, local_path.open("rb") as local:
+            while chunk := local.read(1024 * 1024):
+                remote.write(chunk)
+    if sftp.stat(remote_path).st_size != size:
+        raise RuntimeError(f"SFTP direct size verification failed: {remote_path}")
+    logging.info("SFTP_DIRECT_COMPLETE file=%s bytes=%d", remote_path, size)
+
+
+def upload_file(sftp: paramiko.SFTPClient, local_path: Path, remote_path: str, overwrite: bool, upload_mode: str) -> None:
+    if upload_mode == "direct":
+        upload_direct(sftp, local_path, remote_path, overwrite)
+    else:
+        upload_atomic(sftp, local_path, remote_path, overwrite)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True)
@@ -251,15 +288,19 @@ def main() -> int:
     parser.add_argument("--allow-empty", action="store_true")
     parser.add_argument("--delete-source", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--upload-mode", choices=("atomic", "direct"), default="atomic")
     parser.add_argument("--merge-filename")
     parser.add_argument("--csv-header", action="store_true")
     parser.add_argument("--csv-encoding", default="utf-8")
+    parser.add_argument("--csv-delimiter", default=",", type=validate_csv_delimiter)
     parser.add_argument("--fin-filename")
     parser.add_argument("--file-count-fin-filename")
     args = parser.parse_args()
 
     config = load_config()
     setup_logging(config)
+    logging.info("CSV_FORMAT delimiter=%r encoding=%s", args.csv_delimiter, args.csv_encoding)
+    logging.info("SFTP_UPLOAD_MODE mode=%s overwrite=%s", args.upload_mode, args.overwrite)
     logging.info("TRANSFER_MODE mode=%s merge_filename=%s csv_header=%s csv_encoding=%s fin_filename=%s file_count_fin_filename=%s", "MERGE" if args.merge_filename else "NORMAL", args.merge_filename or "-", args.csv_header, args.csv_encoding, args.fin_filename or "-", args.file_count_fin_filename or "-")
     runner = config.get("runner") or {}
     temp_dir = Path(runner.get("temp_dir", DEFAULT_TEMP_DIR))
@@ -284,9 +325,9 @@ def main() -> int:
     try:
         if args.merge_filename:
             logging.info("MERGE_START bucket=%s prefix=%s files=%d encoding=%s", args.bucket, prefix, len(blobs), args.csv_encoding)
-            merged_path, merged_rows, _ = merge_csv_blobs(blobs, temp_dir, args.csv_header, args.csv_encoding)
+            merged_path, merged_rows, _ = merge_csv_blobs(blobs, temp_dir, args.csv_header, args.csv_encoding, args.csv_delimiter)
             remote_data = posixpath.join(args.remote_dir.rstrip("/"), args.merge_filename)
-            upload_atomic(sftp, merged_path, remote_data, args.overwrite)
+            upload_file(sftp, merged_path, remote_data, args.overwrite, args.upload_mode)
             logging.info("SFTP_DATA_COMPLETE file=%s rows=%d", remote_data, merged_rows)
             if args.fin_filename:
                 fd, fin_name = tempfile.mkstemp(prefix="sftp-runner-fin-", dir=temp_dir)
@@ -296,7 +337,7 @@ def main() -> int:
                     fin_path.write_text(f"{merged_rows}\n", encoding="utf-8")
                     remote_fin = posixpath.join(args.remote_dir.rstrip("/"), args.fin_filename)
                     logging.info("FIN_CREATED type=row_count file=%s content=%d", args.fin_filename, merged_rows)
-                    upload_atomic(sftp, fin_path, remote_fin, args.overwrite)
+                    upload_file(sftp, fin_path, remote_fin, args.overwrite, args.upload_mode)
                     logging.info("SFTP_FIN_COMPLETE type=row_count file=%s content=%d", remote_fin, merged_rows)
                 finally:
                     fin_path.unlink(missing_ok=True)
@@ -308,7 +349,7 @@ def main() -> int:
                     fin_path.write_text("1\n", encoding="utf-8")
                     remote_fin = posixpath.join(args.remote_dir.rstrip("/"), args.file_count_fin_filename)
                     logging.info("FIN_CREATED type=file_count file=%s content=%d", args.file_count_fin_filename, 1)
-                    upload_atomic(sftp, fin_path, remote_fin, args.overwrite)
+                    upload_file(sftp, fin_path, remote_fin, args.overwrite, args.upload_mode)
                     logging.info("SFTP_FIN_COMPLETE type=file_count file=%s content=%d", remote_fin, 1)
                 finally:
                     fin_path.unlink(missing_ok=True)
@@ -337,7 +378,7 @@ def main() -> int:
             tmp_path = Path(tmp_name)
             try:
                 blob.download_to_filename(str(tmp_path))
-                upload_atomic(sftp, tmp_path, remote_path, args.overwrite)
+                upload_file(sftp, tmp_path, remote_path, args.overwrite, args.upload_mode)
             finally:
                 tmp_path.unlink(missing_ok=True)
             uploaded.append(blob.name)

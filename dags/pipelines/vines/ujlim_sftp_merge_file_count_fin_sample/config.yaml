@@ -42,6 +42,7 @@ grapes:
       merge_filename: "outbound_{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}.csv"
       csv_header: true
       csv_encoding: utf-8
+      csv_delimiter: ","
       file_count_fin_filename: "outbound_file_count_{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}.fin"
       overwrite: false
       delete_source: false

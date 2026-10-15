@@ -203,6 +203,7 @@ grapes:
 | 목적지 | `destination.object` | O | 입력 prefix 외부 경로 권장 | 비어 있지 않은 문자열. 같은 버킷 안의 완전한 결과 객체 이름입니다. | `merged/2026-10-11/result.csv` |
 | CSV 헤더 | `options.csv_header` | X | `true` | 불리언. 각 입력 CSV의 첫 레코드를 헤더로 간주하고 첫 번째로 만나는 헤더 한 번만 출력합니다. 데이터 행수에서 헤더를 제외합니다. | `true` |
 | CSV 인코딩 | `options.csv_encoding` | X | `utf-8` | 비어 있지 않은 문자열. 입력 읽기와 결과 쓰기에 함께 사용합니다. | `utf-8` |
+| CSV 구분자 | `options.csv_delimiter` | X | `","` | 입력·출력에 같은 한 글자 문자열을 사용합니다. 파이프, 탭, 세미콜론, 공백 등 지원. CR/LF/NUL/큰따옴표, 빈 문자열, 여러 글자, 비문자열은 거부합니다. | `"\|"` |
 | 원본 삭제 | `options.delete_source` | X | `false` | 불리언. 데이터 업로드 및 요청된 FIN 생성이 완료된 다음 선택된 입력 객체만 삭제합니다. | `false` |
 | 빈 입력 | `options.allow_empty` | X | `false` | 불리언. 매칭 입력이 없으면 기본 실패. `true`는 결과 CSV/FIN 생성 없이 건수 0으로 정상 반환합니다. | `false` |
 | 덮어쓰기 | `options.overwrite` | X | `false` | 불리언. 결과 CSV와 요청된 FIN 객체의 교체 허용 여부입니다. | `false` |
@@ -240,6 +241,7 @@ grapes:
     options:
       csv_header: true
       csv_encoding: utf-8
+      csv_delimiter: ","
       delete_source: false
       allow_empty: false
       overwrite: false
@@ -250,7 +252,7 @@ grapes:
 ### 병합·검증·FIN·삭제의 순서
 
 1. Prefix 목록에서 `/`로 끝나는 이름과 `destination.object` 자체를 제외하고 glob 조건을 적용합니다. 선택된 이름을 사전순 정렬합니다.
-2. 파일들을 임시 디스크에 다운로드하고 Python `csv.reader` / `csv.writer`로 처리합니다. 기본 쉼표 CSV이며, 출력 줄바꿈은 `\n`입니다. 구분자나 quote dialect를 YAML로 바꾸는 옵션은 없습니다.
+2. 파일들을 임시 디스크에 다운로드하고 Python `csv.reader` / `csv.writer`로 처리합니다. 기본 쉼표 CSV이며, 출력 줄바꿈은 `\n`입니다. 구분자는 `options.csv_delimiter`로 설정하며, quote dialect를 YAML로 바꾸는 옵션은 없습니다.
 3. `csv_header: true`이면 각 파일의 첫 레코드를 제거하되 첫 헤더 한 번만 출력합니다. 입력별 헤더 내용·열 수·스키마의 동일 여부는 검사하지 않습니다.
 4. 입력 데이터 레코드 수의 합과 병합 파일을 다시 읽은 데이터 레코드 수가 같은지 검사합니다. 인용부호 안의 줄바꿈은 CSV 레코드 기준으로 처리합니다.
 5. 병합 결과를 업로드하고 GCS 객체가 존재하는지 확인합니다. 이 작업 자체가 업로드 후 원본 대비 크기/CRC32C를 비교하는 것은 아닙니다.
@@ -307,6 +309,8 @@ Vine `runtime.gcp_conn_id` 또는 `runtime.impersonation_chain`을 수정해도 
 | 병합 활성화 | `options.merge_filename` | 병합 시 필수 또는 별칭 사용 | 없음 | 비어 있지 않은 문자열. 지정하면 CSV 병합 모드로 실행합니다. `destination.remote_dir` 아래 최종 파일명. 경로 없는 파일명을 권장합니다. | `result_2026-10-11.csv` |
 | CSV 헤더 | `options.csv_header` | X | 단축 형식은 기본 `false`; 명시 권장 | 불리언. `merge_filename`으로 직접 켜는 형식에서는 생략하면 `--csv-header`를 붙이지 않아 헤더 없는 CSV로 처리합니다. 헤더가 있으면 반드시 `true`를 지정합니다. | `true` |
 | CSV 인코딩 | `options.csv_encoding` | X | `utf-8` | 비어 있지 않은 문자열. 병합 입력 및 출력 인코딩입니다. FIN은 별도로 UTF-8입니다. | `utf-8` |
+| CSV 구분자 | `options.csv_delimiter` | X | `","` | 입력·출력에 같은 한 글자 문자열을 사용합니다. 파이프, 탭, 세미콜론, 공백 등 지원. CR/LF/NUL/큰따옴표, 빈 문자열, 여러 글자, 비문자열은 거부합니다. | `"\|"` |
+| 업로드 방식 | `options.upload_mode` | X | `atomic` | `atomic` 또는 `direct`. Direct는 remove/rename 없이 최종 경로에 기록하며 원자성을 보장하지 않습니다. | `direct` |
 | 행수 FIN | `options.fin_filename` | X | 없음 | 비어 있지 않은 문자열 또는 null. 병합 모드에서만 사용합니다. 내용은 헤더를 제외한 병합 데이터 행수와 줄바꿈이며, SFTP 목적지에 생성합니다. | `result_rows_2026-10-11.fin` |
 | 파일수 FIN | `options.file_count_fin_filename` | X | 없음 | 비어 있지 않은 문자열 또는 null. 병합 모드에서만 사용합니다. 내용은 최종 데이터 파일수 `1`과 줄바꿈입니다. | `result_files_2026-10-11.fin` |
 | 검증 | `options.verification.row_count` | X | `true`, 비활성화 불가 | 불리언. 병합 결과 행수 검증은 필수입니다. 병합 모드에서 `false`로 지정하면 작업 생성 시 오류입니다. | `true` |
@@ -406,6 +410,7 @@ grapes:
       merge_filename: "result_{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}.csv"
       csv_header: true
       csv_encoding: utf-8
+      csv_delimiter: ","
       fin_filename: "result_rows_{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}.fin"
       file_count_fin_filename: "result_files_{{ ti.xcom_pull(task_ids='resolve_business_date')['business_date'] }}.fin"
       verification:
@@ -489,21 +494,21 @@ grapes:
 1. GCS prefix의 비디렉터리 객체를 조회합니다.
 2. 대상 설정을 찾고 Runner → SFTP 접속을 엽니다.
 3. 각 객체를 하나씩 Runner 임시 파일로 다운로드합니다.
-4. 원격 `최종경로.uploading`에 업로드하고 크기를 비교한 뒤 최종 파일명으로 rename합니다. 임시 로컬 파일은 각 전송 후 제거합니다.
+4. 기본 `atomic` 모드에서는 원격 `최종경로.uploading`에 업로드하고 크기를 비교한 뒤 최종 파일명으로 rename합니다. `direct` 모드는 최종 경로에 바로 기록하고 크기를 확인합니다. 임시 로컬 파일은 각 전송 후 제거합니다.
 5. 모든 객체 전송이 성공한 뒤 `delete_source: true`이면 전송 완료된 원본들을 삭제합니다.
 
 **병합 모드**
 
 1. 조회한 GCS 객체를 이름 사전순으로 병합합니다. 각 shard는 처리 후 임시 파일을 삭제합니다.
 2. 각 입력의 CSV 데이터 행수 합과 로컬 병합 파일의 데이터 행수를 비교합니다. 헤더 옵션은 각 입력에 동일하게 적용하며 헤더 일치·스키마는 검증하지 않습니다.
-3. 병합 데이터 한 개를 `.uploading`에 올리고 크기 확인 후 최종 이름으로 바꿉니다.
+3. 병합 데이터 한 개를 선택한 업로드 방식으로 전송하고 크기를 확인합니다. 기본 `atomic` 모드는 `.uploading`에서 최종 이름으로 바꾸며, `direct`는 최종 경로에 바로 기록합니다.
 4. 요청한 행수 FIN과 파일수 FIN을 같은 방식으로 각각 전송합니다. FIN은 각각 UTF-8 `정수\n` 내용입니다.
 5. 모든 요청된 전송이 끝난 뒤 원본 삭제를 수행합니다.
 
 공통 운영 주의사항:
 
 - 원격 업로드 검증은 **크기 비교**입니다. 원격 파일을 다시 읽어 CRC32C/해시를 비교하거나 원격 CSV 행수를 재검증하지 않습니다. 병합 행수 검증은 Runner 로컬에서 수행합니다.
-- `.uploading` 파일은 기존에 있으면 먼저 삭제합니다. `overwrite: true`는 최종 파일도 지운 뒤 rename하므로 파일 교체 전 구간의 원자성을 보장하지 않습니다. 데이터+두 FIN 전체를 하나의 트랜잭션으로 처리하는 것도 아닙니다.
+- `atomic` 모드의 `.uploading` 파일은 기존에 있으면 먼저 삭제합니다. `overwrite: true`는 최종 파일도 지운 뒤 rename하므로 파일 교체 전 구간의 원자성을 보장하지 않습니다. 데이터+두 FIN 전체를 하나의 트랜잭션으로 처리하는 것도 아닙니다.
 - 여러 실행이 같은 최종 이름/`.uploading` 이름을 공유하면 경합할 수 있습니다. 날짜별 경로·파일명을 분리하고 동시 실행을 통제합니다. 한 Vine의 `max_active_runs: 1`만으로 다른 Vine과의 충돌까지 막지는 못합니다.
 - 데이터 업로드 후 FIN 충돌이나 전송 실패가 발생하면 데이터는 남습니다. 원격 파일, FIN, 이미 삭제한 GCS 원본의 자동 롤백은 없습니다. 실패한 `.uploading`이 남을 수 있습니다.
 - Runner 접속 재시도는 SSH/SFTP 연결 단계용입니다. Secret 조회나 `known_hosts` 파일 로드 오류, 전송 중간 실패를 모두 재시도하는 일반 재시도 기능이 아닙니다. Airflow의 `retries`는 전체 Runner 명령을 다시 실행하므로 기존 최종 파일 충돌을 고려합니다.
@@ -624,3 +629,59 @@ grapes:
 - [FIN 센서 Vine](../../dags/pipelines/vines/vine_fin_sensor/config.yaml), [FIN 연계 Root](../../dags/pipelines/roots/root_fin_sensor_daily/config.yaml)
 
 저장소 예시는 일부 실제 환경용 값, `overwrite: true`, `delete_source: true` 등을 포함합니다. 그대로 실행하기 전에 이 문서의 안전한 예시와 비교하고 경로·권한·삭제 정책을 확인합니다. 특히 GCS 통합 샘플의 서로 독립적인 작업들은 `depends_on`이 없으면 병렬로 실행될 수 있습니다.
+
+
+## CSV 구분자 설정 및 배포 순서
+
+`gcs_merge_csv`와 `gcs_to_sftp_runner` 병합의 `options.csv_delimiter`는 같은 의미이며,
+생략 시 기존 쉼표 처리를 유지합니다. 모든 입력 파일의 구분자는 같아야 합니다.
+병합의 읽기·쓰기, 헤더 처리, 행수 검증 및 row-count FIN에 같은 구분자가 적용됩니다.
+따옴표로 감싼 구분자와 필드 안 개행은 Python CSV 처리 규칙으로 보존됩니다.
+헤더와 인코딩 옵션의 기존 기본값은 바뀌지 않습니다.
+
+각 예시는 독립적인 options 설정입니다.
+
+```yaml
+# 쉼표
+options:
+  csv_delimiter: ","
+```
+
+```yaml
+# 파이프
+options:
+  csv_delimiter: "|"
+```
+
+```yaml
+# 탭: 반드시 YAML 큰따옴표의 이스케이프를 사용합니다.
+options:
+  csv_delimiter: "\t"
+```
+
+작은따옴표의 `'\t'`는 두 글자이므로 거부됩니다. 탭이나 공백을 자동으로 trim하지 않습니다.
+세미콜론은 `csv_delimiter: ";"`로 지정합니다.
+큰따옴표(`"`)는 고정 CSV quote character와 충돌하여 데이터가 손상될 수 있으므로 구분자로 사용할 수 없습니다.
+실행 가능한 구조의 예시는
+[CSV 구분자 샘플](../../dags/pipelines/vines/ujlim_sftp_csv_delimiter_sample/config.yaml)을 참고하세요.
+샘플 경로·연결·대상은 실행 전에 환경에 맞게 바꾸고 실제 파일의 구분자도 맞춰야 합니다.
+
+BigQuery `EXPORT DATA`로 CSV를 만드는 경우 SQL의 `field_delimiter`를 별도로 동일하게 설정해야 합니다.
+예를 들어 파이프는 `field_delimiter='|'`입니다. 프레임워크는 SQL을 자동 수정하거나 구분자를 자동 감지하지 않습니다.
+앞단에 `gcs_merge_csv`가 있다면 해당 옵션도 같은 값으로 맞추세요.
+SFTP 일반 전송(병합 없음)은 파일 바이트를 그대로 전달하며 구분자를 변환하지 않습니다.
+
+Runner VM의 `gcs_to_sftp.py`를 먼저 갱신한 뒤 Composer executor/utils 및 YAML을 배포하세요.
+신규 executor는 기본 쉼표를 포함해 `--csv-delimiter`를 전달하므로 구형 Runner는 인자를 거부합니다.
+신규 Runner는 인자 생략 시 쉼표를 사용하여 구형 executor와 호환됩니다.
+기본 `options.upload_mode: atomic`은 임시 파일 업로드·크기 검증 후 rename 방식입니다.
+`options.upload_mode: direct`는 최종 파일명에 직접 기록하며 remove/rename을 호출하지 않습니다.
+`overwrite: false`이면 exclusive create로 기존 파일을 덮어쓰지 않고, `true`이면 기존 내용을 잘라내고 다시 씁니다.
+Direct 전송은 원자적이지 않아 전송 중이거나 실패한 파일이 노출될 수 있습니다. 수신 측은 데이터 업로드 후 생성되는 FIN을 확인하세요.
+이 옵션 역시 신규 Runner를 먼저 배포해야 합니다.
+
+로컬 회귀 테스트(외부 연결 없음):
+
+```sh
+python -m unittest discover -s tests -v
+```

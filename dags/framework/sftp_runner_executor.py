@@ -8,7 +8,7 @@ from datetime import timedelta
 from typing import Any
 
 from framework.logger import task_failure_callback, task_success_callback
-from framework.utils import merge_dicts, validate_airflow_id
+from framework.utils import merge_dicts, validate_airflow_id, validate_csv_delimiter
 
 
 def _arg(value: Any) -> str:
@@ -35,6 +35,7 @@ class SftpRunnerExecutor:
             raise ValueError(f"Unsupported SFTP Runner grape type: {grape.get('type')}")
 
         options = merge_dicts(defaults, grape.get("options", {}))
+        csv_delimiter = validate_csv_delimiter(options.get("csv_delimiter", ","))
         runner = grape.get("runner") or {}
         source = grape.get("source") or {}
         destination = grape.get("destination") or {}
@@ -51,6 +52,12 @@ class SftpRunnerExecutor:
 
         runner_command = runner.get("command", "/engn/sftp-runner/venv/bin/python /engn/sftp-runner/app/gcs_to_sftp.py")
         command = " ".join([str(runner_command), "--target", _arg(target), "--bucket", _arg(bucket), "--prefix", _arg(prefix), "--remote-dir", _arg(remote_dir)])
+        # Use --option=value so even "-" is accepted as a delimiter by argparse.
+        command += " --csv-delimiter=" + _arg(csv_delimiter)
+        upload_mode = options.get("upload_mode", "atomic")
+        if upload_mode not in ("atomic", "direct"):
+            raise ValueError(f"{grape_id}: options.upload_mode must be atomic or direct")
+        command += " --upload-mode " + _arg(upload_mode)
         if bool(options.get("allow_empty", False)):
             command += " --allow-empty"
         if bool(options.get("delete_source", False)):

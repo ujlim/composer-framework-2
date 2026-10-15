@@ -29,6 +29,13 @@ def require_non_empty_string(value: Any, name: str) -> str:
     return value.strip()
 
 
+def validate_csv_delimiter(value: Any) -> str:
+    """Require one literal CSV delimiter; preserve whitespace such as tab/space."""
+    if not isinstance(value, str) or len(value) != 1 or value in ("\r", "\n", "\0", '"'):
+        raise ValueError("csv_delimiter must be a single character other than CR, LF, NUL or double quote")
+    return value
+
+
 def validate_airflow_id(value: str, name: str) -> str:
     value = require_non_empty_string(value, name)
     if not ID_PATTERN.fullmatch(value):
