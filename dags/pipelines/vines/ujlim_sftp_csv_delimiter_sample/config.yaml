@@ -93,3 +93,48 @@ grapes:
       overwrite: false
       delete_source: false
       allow_empty: false
+
+  - grape_id: merge_caret
+    type: gcs_to_sftp_runner
+    runner:
+      ssh_conn_id: REPLACE_WITH_RUNNER_CONNECTION
+    source:
+      bucket: REPLACE_WITH_SOURCE_BUCKET
+      prefix: "outbound/caret/"
+    destination:
+      target: REPLACE_WITH_SFTP_TARGET
+      remote_dir: "/upload/caret"
+    options:
+      upload_mode: atomic  # direct: no remote remove/rename; non-atomic
+      merge_filename: "caret.csv"
+      csv_header: true
+      csv_encoding: utf-8
+      csv_delimiter: "^"
+      fin_filename: "caret_rows.fin"
+      file_count_fin_filename: "caret_files.fin"
+      overwrite: false
+      delete_source: false
+      allow_empty: false
+
+  - grape_id: merge_soh
+    type: gcs_to_sftp_runner
+    runner:
+      ssh_conn_id: REPLACE_WITH_RUNNER_CONNECTION
+    source:
+      bucket: REPLACE_WITH_SOURCE_BUCKET
+      prefix: "outbound/soh/"
+    destination:
+      target: REPLACE_WITH_SFTP_TARGET
+      remote_dir: "/upload/soh"
+    options:
+      upload_mode: atomic  # direct: no remote remove/rename; non-atomic
+      merge_filename: "soh.csv"
+      csv_header: true
+      csv_encoding: utf-8
+      # YAML double quotes decode \x01 to one SOH character (0x01).
+      csv_delimiter: "\x01"
+      fin_filename: "soh_rows.fin"
+      file_count_fin_filename: "soh_files.fin"
+      overwrite: false
+      delete_source: false
+      allow_empty: false

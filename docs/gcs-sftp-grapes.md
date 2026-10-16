@@ -117,4 +117,4 @@ Private-key authentication remains supported per target:
 
 ## CSV delimiters
 
-Both CSV merge operations support `options.csv_delimiter` (default comma). See the [delimiter configuration and rollout guide](user-guide/03-storage-sftp.md#csv-구분자-설정-및-배포-순서) for pipe/tab examples, matching BigQuery export settings, and Runner-first rollout.
+Both CSV merge operations support `options.csv_delimiter` (default comma). See the [delimiter configuration and rollout guide](user-guide/03-storage-sftp.md#csv-구분자-설정-및-배포-순서) for comma/caret/pipe/SOH/tab examples, matching BigQuery export settings, and Runner-first rollout.
