@@ -654,6 +654,28 @@ options:
 ```
 
 ```yaml
+# 캐럿
+options:
+  csv_delimiter: "^"
+```
+
+```yaml
+# SOH (ASCII 0x01): 큰따옴표 안의 역슬래시 이스케이프
+options:
+  csv_delimiter: "\x01"
+```
+
+SOH는 눈에 보이는 `\x01` 네 글자가 아니라 실제 제어문자 한 글자입니다.
+YAML 큰따옴표의 `"\x01"` 또는 `"\u0001"`은 로딩 시 SOH로 변환됩니다.
+작은따옴표의 `'\x01'`, 이중 역슬래시의 `"\\x01"`, 실제 원화 기호를 쓴 `"₩x01"`은
+여러 글자 문자열이므로 거부됩니다. 일부 한글 환경에서 역슬래시가 원화 모양으로 보일 수 있지만,
+설정 파일에는 역슬래시(U+005C)를 사용해야 합니다. 실제 원화 기호(U+20A9)로 바꾸지 마세요.
+프레임워크가 문자열 이스케이프를 다시 해석하지 않으므로 YAML 로딩 후 값이 한 글자인지 확인합니다.
+Executor가 이 값을 shell 인자 하나로 인용하고 Runner CLI가 같은 문자를 받아 CSV 읽기·쓰기에 사용합니다.
+Runner를 직접 실행할 때도 실제 SOH를 전달해야 합니다. Bash에서는 `--csv-delimiter=$'\x01'`을 사용할 수 있으며,
+`--csv-delimiter='\x01'`은 네 글자를 전달하므로 거부됩니다.
+
+```yaml
 # 탭: 반드시 YAML 큰따옴표의 이스케이프를 사용합니다.
 options:
   csv_delimiter: "\t"
@@ -680,8 +702,13 @@ Runner VM의 `gcs_to_sftp.py`를 먼저 갱신한 뒤 Composer executor/utils �
 Direct 전송은 원자적이지 않아 전송 중이거나 실패한 파일이 노출될 수 있습니다. 수신 측은 데이터 업로드 후 생성되는 FIN을 확인하세요.
 이 옵션 역시 신규 Runner를 먼저 배포해야 합니다.
 
-로컬 회귀 테스트(외부 연결 없음):
+로컬 회귀 테스트(외부 연결 없음, PyYAML 필요):
 
 ```sh
 python -m unittest discover -s tests -v
 ```
+
+쉼표·캐럿·파이프·SOH·탭·세미콜론을 대상으로 병합/행수/FIN을 확인합니다.
+YAML → executor → 로컬 shell 인자 → Runner CLI 및 `gcs_merge_csv` 경로에서
+SOH 한 글자가 유지되는지, 필드 안 구분자·따옴표·개행이 보존되는지 검증합니다.
+GCS/SSH/SFTP는 테스트 대역을 사용하며 실제 서비스에는 연결하지 않습니다.

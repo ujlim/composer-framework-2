@@ -1,4 +1,4 @@
-"""Offline regression tests; run: python -m unittest discover -s tests -v."""
+"""Offline regression tests (requires PyYAML); run: python -m unittest discover -s tests -v."""
 import contextlib
 import csv
 import importlib.util
@@ -12,9 +12,11 @@ import types
 import unittest
 from unittest.mock import Mock, patch
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
-DELIMITERS = (',', '|', '\t', ';')
-INVALID = (None, 1, True, b'|', [], {}, '', '||', '\\t', '"', '\r', '\n', '\0')
+DELIMITERS = (',', '^', '|', '\x01', '\t', ';')
+INVALID = (None, 1, True, b'|', [], {}, '', '||', '\\t', '\\x01', '₩x01', '"', '\r', '\n', '\0')
 
 
 def load(name, path):
@@ -29,7 +31,7 @@ class Operator:
         self.__dict__.update(kwargs)
 
 
-# Stub only imports, then restore sys.modules. No optional dependency is needed.
+# Stub only imports, then restore sys.modules. No Airflow, GCP or Paramiko is needed.
 modules = {}
 for name in ('google', 'google.auth', 'google.auth.impersonated_credentials',
              'google.cloud', 'google.cloud.storage', 'google.cloud.secretmanager',
@@ -322,7 +324,7 @@ class ExecutorTests(unittest.TestCase):
 
 
 class RunnerCLITests(unittest.TestCase):
-    def run_main(self, contents, extra):
+    def run_main(self, contents, extra, *, full_command=False):
         with tempfile.TemporaryDirectory() as tmp:
             bucket = Bucket(contents)
             client = Mock()
@@ -330,7 +332,8 @@ class RunnerCLITests(unittest.TestCase):
             client.list_blobs.return_value = [bucket.blob(name) for name in contents]
             config = {'runner': {'temp_dir': tmp}, 'targets': {'test': {'host': 'host', 'username': 'user'}}}
             ssh, sftp = Mock(), SFTP()
-            argv = ['runner', '--target', 'test', '--bucket', 'bucket', '--prefix', 'in/', '--remote-dir', '/out'] + extra
+            base = [] if full_command else ['--target', 'test', '--bucket', 'bucket', '--prefix', 'in/', '--remote-dir', '/out']
+            argv = ['runner'] + base + extra
             with patch.object(sys, 'argv', argv), patch.object(runner, 'load_config', return_value=config), \
                     patch.object(runner, 'setup_logging'), patch.object(runner, 'build_google_credentials', return_value=(None, 'test')), \
                     patch.object(runner.storage, 'Client', return_value=client), patch.object(runner, 'connect', return_value=(ssh, sftp)):
@@ -339,6 +342,69 @@ class RunnerCLITests(unittest.TestCase):
             ssh.close.assert_called_once()
             self.assertTrue(sftp.closed)
             return sftp
+
+    def test_yaml_to_executor_shell_cli_and_gcs_merge(self):
+        # YAML must decode control-character escapes before executor validation.
+        cases = ((None, ','), ('","', ','), ('"^"', '^'), ('"|"', '|'),
+                 (r'"\x01"', '\x01'), (r'"\u0001"', '\x01'), (r'"\t"', '\t'))
+        for literal, delimiter in cases:
+            with self.subTest(yaml_literal=literal):
+                source = 'options: {}' if literal is None else 'options:\n  csv_delimiter: ' + literal
+                options = yaml.safe_load(source)['options']
+                if literal is not None:
+                    self.assertEqual(options['csv_delimiter'], delimiter)
+                    self.assertEqual(len(options['csv_delimiter']), 1)
+                options.update(csv_header=True, merge_filename='merged.csv',
+                               fin_filename='rows.fin', file_count_fin_filename='files.fin')
+                command = ExecutorTests().task('gcs_to_sftp_runner', options).command
+                # Run only printf locally. The Runner uses in-memory GCS/SFTP fakes.
+                raw_args = subprocess.check_output([
+                    '/bin/sh', '-c', 'printf "%s\\0" ' + command[len('python runner.py '):]])
+                args = raw_args.decode('utf-8').split('\0')[:-1]
+                self.assertEqual(args, shlex.split(command)[2:])
+                self.assertIn('--csv-delimiter=' + delimiter, args)
+                contents, expected = fixture(delimiter)
+                sftp = self.run_main(contents, args, full_command=True)
+                self.assertEqual(parsed(sftp.files['/out/merged.csv'], delimiter), expected)
+                self.assertEqual(sftp.files['/out/rows.fin'], b'2\n')
+                self.assertEqual(sftp.files['/out/files.fin'], b'1\n')
+
+                # Feed the same parsed YAML value through the GCS executor as well.
+                gcs_options = dict(options, fin_filename='out/rows.fin',
+                                   file_count_fin_filename='out/files.fin')
+                task = ExecutorTests().task('gcs_merge_csv', gcs_options)
+                self.assertEqual(task.op_kwargs['csv_delimiter'], delimiter)
+                contents, _ = fixture(delimiter)
+                hook = Mock()
+                hook.list.return_value = list(contents)
+                hook.get_conn.return_value.bucket.return_value = Bucket(contents)
+                with patch.object(gcs, 'GCSHook', return_value=hook):
+                    result = task.python_callable(**task.op_kwargs)
+                self.assertEqual(result['merged_rows'], 2)
+                self.assertEqual(parsed(contents['out.csv'], delimiter), expected)
+                self.assertEqual(contents['out/rows.fin'], b'2\n')
+                self.assertEqual(contents['out/files.fin'], b'1\n')
+
+    def test_yaml_literal_escape_spellings_are_rejected(self):
+        for literal in (r"'\x01'", r'"\\x01"', r"'\u0001'", '"₩x01"'):
+            with self.subTest(yaml_literal=literal):
+                options = yaml.safe_load('options:\n  csv_delimiter: ' + literal)['options']
+                self.assertGreater(len(options['csv_delimiter']), 1)
+                for kind in ('gcs_merge_csv', 'gcs_to_sftp_runner'):
+                    with self.assertRaises(ValueError):
+                        ExecutorTests().task(kind, options)
+
+    def test_sample_yaml_covers_caret_and_actual_soh(self):
+        sample = yaml.safe_load((ROOT / 'dags/pipelines/vines/ujlim_sftp_csv_delimiter_sample/config.yaml').read_text())
+        expected = {'merge_comma': ',', 'merge_pipe': '|', 'merge_tab': '\t',
+                    'merge_caret': '^', 'merge_soh': '\x01'}
+        self.assertEqual({grape['grape_id']: grape['options']['csv_delimiter']
+                          for grape in sample['grapes']}, expected)
+        for grape in sample['grapes']:
+            with self.subTest(grape_id=grape['grape_id']), patch.dict(sys.modules, modules):
+                task = executor.SftpRunnerExecutor.create_task(
+                    dag=None, grape=grape, defaults=sample['grape_defaults'])
+                self.assertIn('--csv-delimiter=' + expected[grape['grape_id']], shlex.split(task.command))
 
     def test_cli_delimiter_merge_fin_and_atomic_upload(self):
         for delimiter in DELIMITERS:
@@ -403,7 +469,7 @@ class RunnerCLITests(unittest.TestCase):
             self.assertEqual(sftp.events, [('open', '/out/data', 'xb')])
 
     def test_cli_rejects_invalid_before_loading_config(self):
-        for delimiter in ('', '||', '\\t', '"', '\r', '\n', '\0'):
+        for delimiter in ('', '||', '\\t', '\\x01', '₩x01', '"', '\r', '\n', '\0'):
             with self.subTest(delimiter=repr(delimiter)), patch.object(sys, 'argv',
                     ['runner', '--target', 'test', '--bucket', 'b', '--prefix', 'in/', '--remote-dir', '/out', '--csv-delimiter=' + delimiter]), \
                     patch.object(runner, 'load_config') as config, contextlib.redirect_stderr(io.StringIO()):
