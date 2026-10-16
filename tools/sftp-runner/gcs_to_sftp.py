@@ -320,12 +320,17 @@ def main() -> int:
         raise FileNotFoundError(f"No objects found under gs://{args.bucket}/{prefix}")
 
     target = load_target(config, args.target)
-    ssh, sftp = connect(config, target, credentials)
+    ssh = None
+    sftp = None
     merged_path: Path | None = None
     try:
         if args.merge_filename:
+            # Finish GCS downloads, merge and row verification before opening SFTP.
             logging.info("MERGE_START bucket=%s prefix=%s files=%d encoding=%s", args.bucket, prefix, len(blobs), args.csv_encoding)
             merged_path, merged_rows, _ = merge_csv_blobs(blobs, temp_dir, args.csv_header, args.csv_encoding, args.csv_delimiter)
+
+        ssh, sftp = connect(config, target, credentials)
+        if args.merge_filename:
             remote_data = posixpath.join(args.remote_dir.rstrip("/"), args.merge_filename)
             upload_file(sftp, merged_path, remote_data, args.overwrite, args.upload_mode)
             logging.info("SFTP_DATA_COMPLETE file=%s rows=%d", remote_data, merged_rows)
@@ -392,10 +397,16 @@ def main() -> int:
         logging.exception("JOB_ABORTED result=FAIL")
         raise
     finally:
-        if merged_path:
-            merged_path.unlink(missing_ok=True)
-        sftp.close()
-        ssh.close()
+        try:
+            if merged_path:
+                merged_path.unlink(missing_ok=True)
+        finally:
+            try:
+                if sftp is not None:
+                    sftp.close()
+            finally:
+                if ssh is not None:
+                    ssh.close()
 
 
 if __name__ == "__main__":
