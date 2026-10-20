@@ -129,7 +129,7 @@ class RootFactory:
                 trigger_run_id=(f"root__{root_id}__{{{{ dag_run.run_id }}}}__{vine_id}"),
                 conf=conf,
                 wait_for_completion=bool(options.get("wait_for_completion", True)),
-                poke_interval=int(options.get("poke_interval_seconds", 30)),
+                poke_interval=int(options.get("poke_interval_seconds", 120)),
                 reset_dag_run=bool(options.get("reset_dag_run", False)),
                 deferrable=bool(options.get("deferrable", True)),
                 execution_timeout=timedelta(seconds=int(options.get("execution_timeout_seconds", 21600))),

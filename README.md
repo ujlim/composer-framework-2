@@ -10,3 +10,8 @@ See [selective DAG parsing](docs/selective-dag-parsing.md) for the deployment-ti
 ID manifest, Airflow compatibility, full-catalog fallback, tests, safe release
 promotion, performance measurement and rollback. The optimization does not
 change the generated task graph or deploy anything automatically.
+
+## Runtime option updates
+
+See [SFTP connection order, BigQuery durable compatibility and polling defaults](docs/runtime-options-update.md)
+for behavior, explicit overrides, deployment checks and rollback guidance.

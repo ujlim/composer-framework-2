@@ -118,3 +118,19 @@ Private-key authentication remains supported per target:
 ## CSV delimiters
 
 Both CSV merge operations support `options.csv_delimiter` (default comma). See the [delimiter configuration and rollout guide](user-guide/03-storage-sftp.md#csv-구분자-설정-및-배포-순서) for comma/caret/pipe/SOH/tab examples, matching BigQuery export settings, and Runner-first rollout.
+
+## SFTP connection timing for merged CSV
+
+With `options.merge_filename` (or the existing nested merge option), the Runner
+downloads the GCS objects, merges them locally and verifies row counts **before**
+opening the destination SSH/SFTP connection. It then uploads the merged data,
+uploads any requested row-count and file-count FIN files, and deletes source
+objects only if all requested uploads succeeded and `delete_source` is enabled.
+Local merge/part/FIN temporary files are cleaned up on success or failure.
+
+This removes the idle SFTP connection window during merge preparation. It does
+not prevent connection failures or disconnects during transfer. Existing
+connection retries, timeouts, atomic/direct upload behavior and CLI/YAML options
+are unchanged; normal (non-merge) transfers still connect before downloading
+individual objects. Deploy the updated `tools/sftp-runner/gcs_to_sftp.py` to the
+Runner VM to apply this change.
