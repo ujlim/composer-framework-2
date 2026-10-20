@@ -11,7 +11,10 @@ A broken pipeline is isolated so other DAGs can still be registered.
 from __future__ import annotations
 
 from pathlib import Path
+from time import perf_counter
 from typing import Any
+
+PARSE_STARTED_AT = perf_counter()
 
 # 중요:
 # Airflow DAG discovery safe mode가 이 파일을 DAG 파일로 인식하도록
@@ -19,12 +22,14 @@ from typing import Any
 from airflow.models.dag import DAG
 
 from framework.config_loader import PipelineCatalogLoader
+from framework.parsing_context import get_target_dag_id
 from framework.logger import get_logger
 from framework.root_factory import RootFactory
 from framework.vine_factory import VineFactory
 
 
 LOGGER = get_logger(__name__)
+TARGET_DAG_ID = get_target_dag_id()
 
 DAGS_DIR = Path(__file__).resolve().parent
 PIPELINES_DIR = DAGS_DIR / "pipelines"
@@ -55,7 +60,9 @@ def register_dag(dag: DAG, dag_kind: str, config_path: Path) -> None:
         )
 
     # Airflow DAG parser가 module-level DAG 객체를 발견하도록 등록합니다.
-    globals()[dag.dag_id] = dag
+    # DAG IDs are user input, not Python variable names. Keep them from
+    # overwriting parser control state (e.g. TARGET_DAG_ID or LOGGER).
+    globals()[f"_framework_registered_dag_{len(registered_dag_ids)}"] = dag
     registered_dag_ids.add(dag.dag_id)
 
     LOGGER.info(
@@ -75,7 +82,7 @@ if not PIPELINES_DIR.is_dir():
     )
 
 try:
-    catalog = PipelineCatalogLoader(PIPELINES_DIR).load()
+    catalog = PipelineCatalogLoader(PIPELINES_DIR).load(target_dag_id=TARGET_DAG_ID)
 except Exception:
     LOGGER.exception(
         "Failed to load pipeline catalog",
@@ -89,8 +96,18 @@ except Exception:
     raise
 
 
+selected_configs = [
+    config for config in [*catalog.vines, *catalog.roots]
+    if TARGET_DAG_ID is None or config.id.strip() == TARGET_DAG_ID
+]
+if TARGET_DAG_ID is not None and not selected_configs:
+    raise RuntimeError(f"Requested DAG not found in pipeline catalog: {TARGET_DAG_ID}")
+
+
 # Vine DAG를 먼저 등록합니다.
 for vine_config in catalog.vines:
+    if TARGET_DAG_ID is not None and vine_config.id.strip() != TARGET_DAG_ID:
+        continue
     try:
         vine_dag = VineFactory(vine_config).create()
 
@@ -121,6 +138,8 @@ for vine_config in catalog.vines:
 
 # Root DAG를 나중에 등록합니다.
 for root_config in catalog.roots:
+    if TARGET_DAG_ID is not None and root_config.id.strip() != TARGET_DAG_ID:
+        continue
     try:
         root_dag = RootFactory(
             root_config,
@@ -153,9 +172,16 @@ for root_config in catalog.roots:
 
 
 LOGGER.info(
-    "DAG registration completed",
+    "DAG registration completed mode=%s target=%s selected=%d total=%d elapsed_ms=%.2f",
+    catalog.parse_mode, TARGET_DAG_ID, len(selected_configs), catalog.total_count,
+    (perf_counter() - PARSE_STARTED_AT) * 1000,
     extra={
         "event": "dag_registration_completed",
+        "parse_mode": catalog.parse_mode,
+        "target_dag_id": TARGET_DAG_ID,
+        "selected_dag_count": len(selected_configs),
+        "total_pipeline_count": catalog.total_count,
+        "parse_elapsed_ms": round((perf_counter() - PARSE_STARTED_AT) * 1000, 2),
         "registered_dag_count": len(registered_dag_ids),
         "registration_error_count": len(registration_errors),
         "registered_dag_ids": sorted(registered_dag_ids),
@@ -191,3 +217,6 @@ if configured_pipeline_count == 0:
         "'pipelines/vines/*/config.yaml' or "
         "'pipelines/roots/*/config.yaml'."
     )
+
+if TARGET_DAG_ID is not None and TARGET_DAG_ID not in registered_dag_ids:
+    raise RuntimeError(f"Requested DAG was not registered: {TARGET_DAG_ID}")
