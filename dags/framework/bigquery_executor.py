@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import inspect
 import re
 from datetime import timedelta
 from typing import Any
@@ -24,6 +25,27 @@ _BQ_LABEL_RE = re.compile(r"[^a-z0-9_-]")
 def _label(value: str) -> str:
     value = _BQ_LABEL_RE.sub("_", value.lower())[:63]
     return value or "unknown"
+
+
+def _durable_kwargs(options: dict[str, Any]) -> dict[str, bool]:
+    """Forward only to providers with an explicit durable constructor option.
+
+    Older providers accept **kwargs but BaseOperator rejects unknown arguments.
+    Do not infer durable support from **kwargs or from the Composer image version.
+    """
+    durable = options.get("durable", False)
+    if not isinstance(durable, bool):
+        raise ValueError("options.durable must be a YAML boolean (true or false)")
+    parameters = inspect.signature(BigQueryInsertJobOperator).parameters
+    if "durable" in parameters:
+        return {"durable": durable}
+    if durable:
+        raise ValueError(
+            "options.durable=true requires a Google provider whose "
+            "BigQueryInsertJobOperator supports durable; verify/upgrade the "
+            "provider and Airflow runtime, or set durable=false"
+        )
+    return {}
 
 
 class BigQueryExecutor:
@@ -98,6 +120,7 @@ class BigQueryExecutor:
             gcp_conn_id=runtime.get("gcp_conn_id", "google_cloud_default"),
             impersonation_chain=runtime.get("impersonation_chain"),
             deferrable=bool(options.get("deferrable", True)),
+            **_durable_kwargs(options),
             force_rerun=bool(options.get("force_rerun", False)),
             retries=int(options.get("retries", 1)),
             retry_delay=timedelta(seconds=int(options.get("retry_delay_seconds", 300))),

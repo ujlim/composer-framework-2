@@ -48,7 +48,7 @@ class FinFileSensorExecutor:
             object=object_name,
             google_cloud_conn_id=runtime.get("gcp_conn_id", "google_cloud_default"),
             impersonation_chain=runtime.get("impersonation_chain"),
-            poke_interval=int(options.get("poke_interval_seconds", 60)),
+            poke_interval=int(options.get("poke_interval_seconds", 120)),
             timeout=timeout_seconds,
             mode=str(options.get("mode", "reschedule")),
             deferrable=bool(options.get("deferrable", True)),
