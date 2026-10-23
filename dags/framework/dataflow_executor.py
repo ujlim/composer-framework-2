@@ -7,12 +7,14 @@ import json
 import logging
 import re
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from airflow.hooks.base import BaseHook
 from airflow.models import BaseOperator
 from airflow.providers.google.cloud.hooks.gcs import GCSHook
+
+from framework.dataflow_diagnostics import collect_failure_diagnostics, redact
 
 from framework.logger import task_failure_callback, task_success_callback
 from framework.models import LoadedConfig
@@ -129,7 +131,11 @@ class DataflowJdbcOperator(BaseOperator):
 
         from googleapiclient.discovery import build
 
-        service = build("dataflow", "v1b3", cache_discovery=False)
+        import google.auth
+
+        # Preserve the existing launch/poll ADC identity; diagnostics use that same identity.
+        credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        service = build("dataflow", "v1b3", credentials=credentials, cache_discovery=False)
         suffix = context["ts_nodash"].lower().replace("t", "-")
         job_name = _safe_job_name(f"{self.job_name_prefix}-{self.db_type}-{suffix}")
         body = {
@@ -147,13 +153,48 @@ class DataflowJdbcOperator(BaseOperator):
             }
         }
         LOGGER.info("Launching Dataflow job=%s query_uri=%s", job_name, query_uri)
-        response = service.projects().locations().flexTemplates().launch(
-            projectId=self.project_id, location=self.region, body=body
-        ).execute()
+        launch_time = datetime.now(timezone.utc)
+        job_id = None
+
+        # Build the redaction set without letting optional secret lookup mask a failure.
+        diagnostic_secrets = [conn.login, parameters["connection_url"], self.sql]
+        try:
+            diagnostic_secrets.append(conn.password)
+        except Exception:
+            pass
+
+        def diagnose():
+            try:
+                collect_failure_diagnostics(
+                    logger=self.log, credentials=credentials, project_id=self.project_id,
+                    region=self.region, job_id=job_id, job_name=job_name,
+                    launch_time=launch_time, secrets=diagnostic_secrets,
+                )
+            except Exception as exc:
+                self.log.warning("Failure diagnostics could not run (%s); original failure preserved.", type(exc).__name__)
+
+        try:
+            response = service.projects().locations().flexTemplates().launch(
+                projectId=self.project_id, location=self.region, body=body
+            ).execute()
+        except Exception as exc:
+            diagnose()
+            # HttpError.__str__ can include the complete HTTP response and URI.
+            # Retain the actionable error message/status, not the raw payload.
+            reason = str(exc)
+            if hasattr(exc, "content"):
+                try:
+                    reason = json.loads(exc.content).get("error", {}).get("message", "API request failed")
+                except Exception:
+                    reason = "API request failed; inspect Dataflow launch logs"
+            status = getattr(getattr(exc, "resp", None), "status", "unknown")
+            safe_reason = redact(reason, diagnostic_secrets)[:2000]
+            raise RuntimeError(f"Dataflow launch failed ({type(exc).__name__}, status={status}): {safe_reason}") from None
         job = response.get("job") or {}
         job_id = job.get("id")
         if not job_id:
-            raise RuntimeError(f"Dataflow launch did not return job id: {response}")
+            diagnose()
+            raise RuntimeError("Dataflow launch did not return job id; inspect launcher logs")
 
         while True:
             current = service.projects().locations().jobs().get(
@@ -163,6 +204,7 @@ class DataflowJdbcOperator(BaseOperator):
             LOGGER.info("Dataflow job=%s id=%s state=%s", job_name, job_id, state)
             if state in _TERMINAL_STATES:
                 if state not in _SUCCESS_STATES:
+                    diagnose()
                     raise RuntimeError(f"Dataflow job {job_id} ended in {state}")
                 return {"job_id": job_id, "job_name": job_name, "state": state, "query_uri": query_uri}
             time.sleep(self.poll_interval_seconds)
