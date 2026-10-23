@@ -1,3 +1,6 @@
+# Author: LIM UI JIN
+# Created: 2026-10-23
+
 """Bounded, best-effort remote failure excerpts; never a complete log mirror."""
 from __future__ import annotations
 
