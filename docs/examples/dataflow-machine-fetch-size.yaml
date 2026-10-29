@@ -1,0 +1,19 @@
+# Configuration fragment: merge into an existing test Vine, not a standalone DAG.
+# Replace project/bucket/template placeholders and preserve all existing runtime fields.
+runtime:
+  dataflow:
+    template_gcs_path: gs://YOUR_SYSTEM_BUCKET/templates/jdbc-export/20261029-machine-fetch/template.json
+    machine_type: n2-highmem-2  # Optional; applies to JDBC jobs in this Vine.
+grapes:
+  - grape_id: export_oracle_test
+    type: jdbc_to_bigquery
+    sql_file: sql/your_existing_query.sql
+    source:
+      db_type: oracle
+      connection_id: your_oracle_connection
+      driver_jars: gs://YOUR_SYSTEM_BUCKET/jdbc/ojdbc.jar
+      fetch_size: 1000  # Integer 1..32767; omit/null to preserve JDBC default.
+    destination:
+      table: YOUR_PROJECT:YOUR_TEST_DATASET.oracle_fetch_test
+      schema_file: schema/your_existing_schema.json
+      write_disposition: WRITE_TRUNCATE  # Dedicated disposable test table ONLY.

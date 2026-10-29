@@ -90,6 +90,7 @@ def run():
     parser.add_argument("--password_secret", required=True)
     parser.add_argument("--driver_jars", required=True)
     parser.add_argument("--query_uri", required=True)
+    parser.add_argument("--fetch_size", type=int, default=None)
     parser.add_argument("--destination_type", required=True, choices=["gcs", "bigquery"])
     parser.add_argument("--output_path")
     parser.add_argument("--output_format", default="json", choices=["json", "csv", "parquet"])
@@ -99,6 +100,12 @@ def run():
     parser.add_argument("--write_disposition", default="WRITE_APPEND")
     parser.add_argument("--create_disposition", default="CREATE_IF_NEEDED")
     args, pipeline_args = parser.parse_known_args()
+    if args.fetch_size is not None and not 1 <= args.fetch_size <= 32767:
+        parser.error("--fetch_size must be between 1 and 32767")
+    logging.info(
+        "JDBC fetch_size=%s (read hint, not BigQuery commit batch size)",
+        args.fetch_size if args.fetch_size is not None else "<jdbc-default>",
+    )
 
     credentials, adc_project_id = google.auth.default()
     logging.info(
@@ -123,6 +130,7 @@ def run():
             username=args.username,
             password=password,
             driver_jars=args.driver_jars,
+            fetch_size=args.fetch_size,
         )
 
         if args.destination_type == "gcs":

@@ -88,6 +88,15 @@
       "label": "BigQuery Create Disposition",
       "isOptional": true,
       "helpText": "BigQuery create disposition, for example CREATE_IF_NEEDED."
+    },
+    {
+      "name": "fetch_size",
+      "label": "JDBC Fetch Size",
+      "isOptional": true,
+      "regexes": [
+        "^[1-9][0-9]{0,4}$"
+      ],
+      "helpText": "Optional JDBC fetch-size hint from 1 to 32767 (validated by launcher). Not a BigQuery commit batch size."
     }
   ]
 }

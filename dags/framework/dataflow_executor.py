@@ -58,8 +58,19 @@ class DataflowJdbcOperator(BaseOperator):
                  destination_type, destination, project_id, region, template_gcs_path,
                  system_bucket, subnetwork, service_account_email, staging_location=None,
                  temp_location=None, gcp_conn_id="google_cloud_default", impersonation_chain=None,
-                 poll_interval_seconds=30, job_name_prefix="jdbc-export", **kwargs):
+                 poll_interval_seconds=30, job_name_prefix="jdbc-export",
+                 machine_type=None, fetch_size=None, **kwargs):
         super().__init__(**kwargs)
+        if machine_type is not None:
+            if not isinstance(machine_type, str) or not machine_type.strip():
+                raise ValueError("runtime.dataflow.machine_type must be a non-empty string")
+            machine_type = machine_type.strip()
+        if fetch_size is not None and (
+            type(fetch_size) is not int or not 1 <= fetch_size <= 32767
+        ):
+            raise ValueError("source.fetch_size must be an integer from 1 to 32767")
+        self.machine_type = machine_type
+        self.fetch_size = fetch_size
         self.sql = sql
         self.db_type = db_type
         self.connection_id = connection_id
@@ -112,6 +123,8 @@ class DataflowJdbcOperator(BaseOperator):
             "query_uri": query_uri,
             "destination_type": self.destination_type,
         }
+        if self.fetch_size is not None:
+            parameters["fetch_size"] = str(self.fetch_size)
         if self.destination_type == "gcs":
             parameters.update({
                 "output_path": str(self.destination["path"]),
@@ -146,6 +159,13 @@ class DataflowJdbcOperator(BaseOperator):
                 },
             }
         }
+        if self.machine_type is not None:
+            body["launchParameter"]["environment"]["machineType"] = self.machine_type
+        LOGGER.info(
+            "Dataflow JDBC settings machine_type=%s fetch_size=%s",
+            self.machine_type if self.machine_type is not None else "<service-default>",
+            self.fetch_size if self.fetch_size is not None else "<jdbc-default>",
+        )
         LOGGER.info("Launching Dataflow job=%s query_uri=%s", job_name, query_uri)
         response = service.projects().locations().flexTemplates().launch(
             projectId=self.project_id, location=self.region, body=body
@@ -228,6 +248,7 @@ class DataflowExecutor:
             task_id=grape_id, dag=dag, sql=sql, db_type=db_type, connection_id=str(connection_id),
             driver_jars=str(driver_jars), password_secret=source.get("password_secret"),
             destination_type=destination_type, destination=destination,
+            machine_type=df.get("machine_type"), fetch_size=source.get("fetch_size"),
             project_id=str(df["project_id"]), region=str(df["region"]),
             template_gcs_path=str(df["template_gcs_path"]), system_bucket=str(df["system_bucket"]),
             subnetwork=str(df["subnetwork"]), service_account_email=str(df["service_account_email"]),
