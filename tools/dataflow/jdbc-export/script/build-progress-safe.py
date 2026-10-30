@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Author: 임의진 (LIM UI JIN)
+# Created: 2026-10-30
+# Updated: 2026-10-30
 """Opt-in B image/template publishing. Default is an offline dry run."""
 import argparse
 import json
@@ -19,12 +22,56 @@ class SafetyError(RuntimeError):
     pass
 
 
+def redact_diagnostic(text):
+    """Best-effort masking, not a guarantee that arbitrary secrets are recognizable."""
+    text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
+    text = re.sub(r'-----BEGIN [^-]*PRIVATE KEY-----.*?(?:-----END [^-]*PRIVATE KEY-----|$)',
+                  '[REDACTED PRIVATE KEY]', text, flags=re.S)
+    text = re.sub(r'(?i)\b(?:Bearer|Basic)\s+[^\s,;]+', 'Bearer [REDACTED]', text)
+    text = re.sub(r"(?i)([\"']?(?:password|passwd|pwd|access_token|refresh_token|id_token|token|api[_-]?key|client_secret|private_key|authorization)[\"']?\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+                  r'\1[REDACTED]', text)
+    text = re.sub(r"(?i)(--(?:password|passwd|pwd|token|access-token|refresh-token|api-key|client-secret)\s+)(?:\"[^\"]*\"|'[^']*'|[^\s]+)",
+                  r'\1[REDACTED]', text)
+    text = re.sub(r'\bya29\.[A-Za-z0-9._-]+|\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+',
+                  '[REDACTED TOKEN]', text)
+    def mask_url(match):
+        try:
+            url = urllib.parse.urlsplit(match.group(0))
+            host = url.hostname or '<invalid-host>'
+            return url.scheme + '://' + host + url.path + ('?[REDACTED QUERY]' if url.query else '')
+        except ValueError:
+            return '[REDACTED URL]'
+    text = re.sub(r'https?://[^\s<>]+', mask_url, text)
+    return ''.join(c for c in text if c in '\n\t' or ord(c) >= 32)
+
+
+def command_error_excerpt(command, stderr):
+    # Never reveal token command output or arbitrary build stdout/log tail.
+    if command[:3] != ['gcloud', 'builds', 'submit']:
+        return ''
+    stderr = stderr if isinstance(stderr, str) else ''
+    # Select final gcloud diagnostic lines only; streamed Docker/SQL logs are excluded.
+    stderr = stderr[-65536:]
+    candidates = [line for line in stderr.splitlines()
+                  if re.match(r'^\s*ERROR:\s*\(gcloud\.[a-z0-9_.-]+\)', line)]
+    references = re.findall(r'https://cloudbuild\.googleapis\.com/v1/projects/[a-z0-9-]+/(?:locations/[a-z0-9-]+/)?builds/[a-f0-9-]{36}', stderr)
+    pieces = [redact_diagnostic(line).encode('utf-8')[:2048].decode('utf-8', 'ignore')
+              for line in candidates[-3:]]
+    pieces += ['Observed build reference (state unknown): ' + ref for ref in list(dict.fromkeys(references))[-3:]]
+    if not pieces:
+        pieces = ['No selected gcloud ERROR line/build reference; inspect the prior local gcloud log.']
+    value = '\n'.join(pieces)
+    value = value.encode('utf-8')[:8192].decode('utf-8', 'ignore')
+    return ('\nSelected stderr context (bounded, best-effort redacted; not a root-cause verdict):\n'
+            + value + '\nDo not resubmit to collect logs. Read existing build/local logs first; review before sharing.')
+
+
 def run(command):
     result = subprocess.run(command, text=True, capture_output=True, check=False)
     if result.returncode:
-        # Do not expose credentials or arbitrary server response bodies.
+        excerpt = command_error_excerpt(command, result.stderr)
         raise SafetyError(f'Command failed ({result.returncode}): {shlex.join(command)}; '
-                          'outcome may be partial; inspect Cloud Build/targets before retrying.')
+                          'outcome may be partial; inspect Cloud Build/targets before retrying.' + excerpt)
     return result.stdout
 
 

@@ -1,3 +1,6 @@
+# Author: 임의진 (LIM UI JIN)
+# Created: 2026-10-30
+
 import argparse
 import contextlib
 import importlib.util
@@ -142,6 +145,48 @@ class SafeBuildTest(unittest.TestCase):
     def test_required_404_and_network_fail_closed(self):
         for error in [urllib.error.HTTPError('x',404,'error',{},None),urllib.error.URLError('timeout')]:
             with patch.object(b,'run',return_value='token'),patch.object(b.urllib.request,'urlopen',side_effect=error),self.assertRaises(b.SafetyError):b.read_json('https://example')
+
+    def test_cloud_build_error_context_without_arbitrary_logs(self):
+        stderr='private application row\nERROR: (gcloud.builds.submit) PERMISSION_DENIED: storage.objects.create denied\n'
+        with patch.object(b.subprocess,'run',return_value=argparse.Namespace(returncode=1,stdout='secret stdout',stderr=stderr)),self.assertRaises(b.SafetyError) as error:
+            b.run(['gcloud','builds','submit','docker'])
+        message=str(error.exception)
+        self.assertIn('storage.objects.create denied',message)
+        self.assertNotIn('private application row',message);self.assertNotIn('secret stdout',message)
+        self.assertIn('Do not resubmit',message)
+
+    def test_auth_errors_never_exposed(self):
+        text=b.command_error_excerpt(['gcloud','auth','print-access-token'],'ERROR: (gcloud.auth) token secret')
+        self.assertEqual(text,'')
+
+    def test_build_error_redacts_common_secrets(self):
+        text=b.command_error_excerpt(['gcloud','builds','submit'],
+            'ERROR: (gcloud.builds.submit) password="hello world" token=abc123 Authorization: Bearer tok123 '
+            'https://user:pass@example.com/path?X-Goog-Signature=secret ya29.oauth-secret')
+        for secret in ['hello world','abc123','tok123','user:pass','X-Goog-Signature=secret','ya29.oauth-secret']:
+            self.assertNotIn(secret,text)
+        self.assertIn('[REDACTED',text)
+
+    def test_cli_password_and_pwd_are_redacted(self):
+        text=b.command_error_excerpt(['gcloud','builds','submit'],
+            'ERROR: (gcloud.builds.submit) --password "hello world" --token sensitive-token pwd=shortsecret')
+        for secret in ['hello world','sensitive-token','shortsecret']:
+            self.assertNotIn(secret,text)
+
+    def test_build_reference_does_not_claim_success(self):
+        url='https://cloudbuild.googleapis.com/v1/projects/test-proj/locations/asia-northeast3/builds/12345678-1234-1234-1234-123456789abc'
+        text=b.command_error_excerpt(['gcloud','builds','submit'],'Created ['+url+']')
+        self.assertIn(url,text);self.assertIn('state unknown',text)
+
+    def test_bounded_errors_and_missing_stderr(self):
+        text=b.command_error_excerpt(['gcloud','builds','submit'],('ERROR: (gcloud.builds.submit) '+'가'*10000+'\n')*10)
+        self.assertLess(len(text.encode()),8700)
+        self.assertIn('No selected',b.command_error_excerpt(['gcloud','builds','submit'],None))
+
+    def test_author_and_date_headers(self):
+        source=PATH.read_text()
+        self.assertIn('# Author: 임의진 (LIM UI JIN)',source)
+        self.assertIn('# Created: 2026-10-30',source)
 
     def test_command_failure_not_treated_absence(self):
         with patch.object(b.subprocess,'run',return_value=argparse.Namespace(returncode=1,stdout='',stderr='secret')),self.assertRaises(b.SafetyError) as error:b.run(['gcloud','x'])

@@ -1,5 +1,7 @@
 # B 전용 안전 이미지 / Flex Template 빌드
 
+작성자: 임의진 (LIM UI JIN) · 작성/수정일: 2026-10-30
+
 이 도구는 `feature/26.1030.dataflow-progress-logs`의 B launcher를 **별도 이미지 이름**으로 빌드합니다.
 기존 `build-image.sh`, `build-template.sh`는 호환성 때문에 변경하지 않았지만 기본값이
 `jdbc-export:v1` / `templates/jdbc-export/template.json`이므로 **B 배포에 사용하지 마십시오**.
@@ -62,8 +64,9 @@ CLI는 로그인된 gcloud 사용자의 access token을 메모리에서 읽기 �
 서비스 계정 키를 만들지 않습니다. Artifact Registry repository/tag 읽기, 버킷/객체 읽기,
 Cloud Build 실행과 빌드 계정의 Artifact Registry push, 실행자의 신규 GCS object 생성 권한 등이 필요합니다.
 이 도구는 IAM/API enablement/정책을 변경하지 않습니다. 실제 조직별 build SA/네트워크 정책은 별도 검증해야 합니다.
-stdout으로 진행 계획을 출력하며 Cloud Build 실패 시 명령/종료코드만 알립니다. 원문 오류/비밀은 출력하지 않으므로
-Cloud Build 콘솔에서 실제 빌드 상태를 확인하십시오. 실패를 성공으로 간주하지 않습니다.
+stdout으로 진행 계획을 출력합니다. Cloud Build submit 실패 시 명령/종료코드와 제한된 gcloud ERROR 행,
+발견된 Build 참조를 출력합니다. 전체 stdout/빌드 로그는 출력하지 않으며 인증 토큰 명령의 오류본문도 숨깁니다.
+마스킹은 best-effort로 알려지지 않은 비밀까지 보장하지 않으므로 공유 전 직접 검토하십시오. 실패를 성공으로 간주하지 않습니다.
 
 ## 빌드 후 선택 배포 / 롤백
 
@@ -99,3 +102,50 @@ Cloud Build 콘솔에서 실제 빌드 상태를 확인하십시오. 실패를 �
 네트워크 연결 금지 상태에서 실행해 기본 출력 `|-` YAML 실패와 명시 JSON + 1회 추가디코딩 성공을
 재현했습니다. SDK 설치/인증/GCP 빌드는 수행하지 않았습니다. 다른 SDK 버전의 실제 실행은 별도 검증 대상입니다.
 공식 형식 문서: https://docs.cloud.google.com/sdk/gcloud/reference/topic/formats
+
+
+## builds submit 종료코드 1: 재실행 대신 기존 결과 조회
+
+종료코드만으로 IAM/버킷/네트워크/Docker 원인을 확정할 수 없습니다. 제출 전 실패와 서버 빌드 실패,
+빌드 성공 후 로그 조회 실패 모두 구분해야 합니다. 이 경로에서는 소스 업로드/Build/이미지 일부가 이미
+생성됐을 수 있습니다. **오류를 다시 수집하려고 --execute를 재실행하지 마십시오.**
+
+수정본은 이후 실패에서 stderr 마지막64Ki 문자 중 `ERROR: (gcloud...)` 최대3행(각2KiB),
+실제 발견된 Cloud Build API 참조 최대3개만 선택하고 최종본문8KiB로 제한합니다.
+일반 Docker/애플리케이션 로그나 stdout 전체, 임의 연속행은 표시하지 않습니다.
+Authorization/token/password/URL query/인증 URL/일반 키 형식을 가리지만 완벽한 비밀탐지기가 아닙니다.
+참조는 state unknown이며 성공을 뜻하지 않습니다. 출력이 없으면 ‘오류 없음’이 아니라 선택한 줄이 없다는 뜻입니다.
+현재 과거 실패의 가려진 stderr를 이 패치로 복구할 수는 없습니다. 기존 로컬 CLI 로그/서버 빌드 로그를 읽으십시오.
+
+```bash
+# 실패 직후 아직 다른 gcloud 명령을 실행하지 않았다면, 직전 로컬로그 확인
+# 민감정보가 있을 수 있으므로 전체를 그대로 공유하지 마십시오.
+gcloud info --show-log
+
+# Cloud Build 조회만 수행; 새 빌드 제출 없음
+gcloud builds list --project=gcp-prod-edp-sa-udw --region=asia-northeast3 \
+  --sort-by='~createTime' --limit=10 \
+  --format='table(id,status,createTime,images,logUrl)'
+
+# 시각/이미지가 일치하는 실제 BUILD_ID를 확인한 뒤 실행 (최신 1개를 무조건 선택 금지)
+gcloud builds describe BUILD_ID --project=gcp-prod-edp-sa-udw --region=asia-northeast3 \
+  --format='yaml(id,status,statusDetail,failureInfo,logUrl,serviceAccount,images)'
+gcloud builds log BUILD_ID --project=gcp-prod-edp-sa-udw --region=asia-northeast3
+```
+
+최근10개에 없으면 조회 시간범위/개수/권한/지역을 확인하십시오. 목록이 비었다고 제출 전 실패로 확정하지 않습니다.
+다른 gcloud 명령을 실행했다면 `--show-log`의 ‘마지막 로그’는 원래 submit 로그가 아닐 수 있습니다.
+이 경우 `gcloud info --format='value(config.paths.global_config_dir)'`로 현재 설정 디렉터리를 찾고,
+그 아래 `logs/YYYY.MM.DD/`에서 실패 시각에 해당하는 파일을 로컬에서 확인하십시오.
+SDK 591의 submit 기록은 `Running [gcloud.builds.submit] with arguments:`로 찾을 수 있습니다.
+로그 경로는 CLOUDSDK_CONFIG/설치환경에 따라 달라지므로 `.config/gcloud`를 무조건 가정하지 마십시오.
+`ERROR`, `PERMISSION_DENIED`, `Traceback`, `Created [` 주변을 먼저 보고 비밀/계정정보는 공유 전에 제거합니다.
+
+기존 사용자 정의 cloudbuild YAML의 `--no-cache`, `--pull`, `GCS_ONLY`와 이 도구의 `--tag` 빌드는
+동일한 빌드 구성이 아닙니다. 이 차이는 조사 항목이지 현재 종료코드1의 입증된 원인은 아닙니다.
+이 패치가 자동으로 옵션/권한/이미지를 변경하지 않습니다.
+
+- https://docs.cloud.google.com/sdk/gcloud/reference/builds/list
+- https://docs.cloud.google.com/sdk/gcloud/reference/builds/describe
+- https://docs.cloud.google.com/sdk/gcloud/reference/builds/log
+- https://docs.cloud.google.com/sdk/gcloud/reference/info
