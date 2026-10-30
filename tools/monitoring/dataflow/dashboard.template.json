@@ -1,0 +1,319 @@
+{
+  "displayName": "Dataflow JDBC diagnostics - __JOB_NAME__",
+  "mosaicLayout": {
+    "columns": 12,
+    "tiles": [
+      {
+        "xPos": 0,
+        "yPos": 0,
+        "width": 12,
+        "height": 3,
+        "widget": {
+          "title": "How to interpret / 범위",
+          "text": {
+            "format": "MARKDOWN",
+            "content": "Project __PROJECT_ID__ / region __REGION__ / job __JOB_NAME__ / ID __JOB_ID__.\n**No data = unknown, not zero.** Choose the actual job time range; native metrics can lag up to several minutes.\nOracle cursor reads ≠ post-JDBC output ≠ BigQuery confirmed rows. No percent-complete or confirmed BQ row counter is available.\nCharts retain individual series and 60-second maxima; never sum cumulative gauge samples or PCollections.\n[Dataflow Job](https://console.cloud.google.com/dataflow/jobs/__REGION__/__JOB_ID__?project=__PROJECT_ID__)"
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 3,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "Current vCPUs (not worker count)",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"dataflow.googleapis.com/job/current_num_vcpus\" AND resource.type=\"dataflow_job\" AND resource.labels.project_id=\"__PROJECT_ID__\" AND resource.labels.region=\"__REGION__\" AND resource.labels.job_name=\"__JOB_NAME__\" AND metric.labels.job_id=\"__JOB_ID__\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_MAX"
+                    }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": ""
+              }
+            ],
+            "yAxis": {
+              "label": "native value (no cross-series sum)",
+              "scale": "LINEAR"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 6,
+        "yPos": 3,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "Failure flag: 1=failed; job-name scoped (select run time)",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"dataflow.googleapis.com/job/is_failed\" AND resource.type=\"dataflow_job\" AND resource.labels.project_id=\"__PROJECT_ID__\" AND resource.labels.region=\"__REGION__\" AND resource.labels.job_name=\"__JOB_NAME__\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_MAX"
+                    }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": ""
+              }
+            ],
+            "yAxis": {
+              "label": "native value (no cross-series sum)",
+              "scale": "LINEAR"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 7,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "Container memory used (bytes; individual worker/container)",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"dataflow.googleapis.com/worker/memory/bytes_used\" AND resource.type=\"dataflow_worker\" AND resource.labels.project_id=\"__PROJECT_ID__\" AND resource.labels.job_id=\"__JOB_ID__\" AND resource.labels.job_name=\"__JOB_NAME__\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_MAX"
+                    }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${resource.labels.worker_type} / ${resource.labels.worker_id} / ${metric.labels.container}"
+              }
+            ],
+            "yAxis": {
+              "label": "native value (no cross-series sum)",
+              "scale": "LINEAR"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 6,
+        "yPos": 7,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "Container memory limit (bytes; not usage)",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"dataflow.googleapis.com/worker/memory/container_limit\" AND resource.type=\"dataflow_worker\" AND resource.labels.project_id=\"__PROJECT_ID__\" AND resource.labels.job_id=\"__JOB_ID__\" AND resource.labels.job_name=\"__JOB_NAME__\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_MAX"
+                    }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${resource.labels.worker_type} / ${resource.labels.worker_id} / ${metric.labels.container}"
+              }
+            ],
+            "yAxis": {
+              "label": "native value (no cross-series sum)",
+              "scale": "LINEAR"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 11,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "PCollection elements so far (not source/BQ rows)",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"dataflow.googleapis.com/job/element_count\" AND resource.type=\"dataflow_job\" AND resource.labels.project_id=\"__PROJECT_ID__\" AND resource.labels.region=\"__REGION__\" AND resource.labels.job_name=\"__JOB_NAME__\" AND metric.labels.job_id=\"__JOB_ID__\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_MAX"
+                    }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${metric.labels.pcollection}"
+              }
+            ],
+            "yAxis": {
+              "label": "native value (no cross-series sum)",
+              "scale": "LINEAR"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 6,
+        "yPos": 11,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "PCollection estimated bytes so far (not stored-file bytes)",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"dataflow.googleapis.com/job/estimated_byte_count\" AND resource.type=\"dataflow_job\" AND resource.labels.project_id=\"__PROJECT_ID__\" AND resource.labels.region=\"__REGION__\" AND resource.labels.job_name=\"__JOB_NAME__\" AND metric.labels.job_id=\"__JOB_ID__\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_MAX"
+                    }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${metric.labels.pcollection}"
+              }
+            ],
+            "yAxis": {
+              "label": "native value (no cross-series sum)",
+              "scale": "LINEAR"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 15,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "SDK counters: locate post_jdbc_output_rows (after barrier)",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"dataflow.googleapis.com/job/user_counter\" AND resource.type=\"dataflow_job\" AND resource.labels.project_id=\"__PROJECT_ID__\" AND resource.labels.region=\"__REGION__\" AND resource.labels.job_name=\"__JOB_NAME__\" AND metric.labels.job_id=\"__JOB_ID__\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_MAX"
+                    }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${metric.labels.metric_name} / ${metric.labels.ptransform}"
+              }
+            ],
+            "yAxis": {
+              "label": "native value (no cross-series sum)",
+              "scale": "LINEAR"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 6,
+        "yPos": 15,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "Total shuffle bytes processed (gauge; not retained disk bytes)",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"dataflow.googleapis.com/job/total_shuffle_data_processed\" AND resource.type=\"dataflow_job\" AND resource.labels.project_id=\"__PROJECT_ID__\" AND resource.labels.region=\"__REGION__\" AND resource.labels.job_name=\"__JOB_NAME__\" AND metric.labels.job_id=\"__JOB_ID__\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_MAX"
+                    }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": ""
+              }
+            ],
+            "yAxis": {
+              "label": "native value (no cross-series sum)",
+              "scale": "LINEAR"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 19,
+        "width": 12,
+        "height": 5,
+        "widget": {
+          "title": "Composer stage snapshots / unknown / API observation errors",
+          "logsPanel": {
+            "filter": "\"Dataflow progress\" AND \"__JOB_ID__\"",
+            "resourceNames": [
+              "projects/__PROJECT_ID__"
+            ]
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 24,
+        "width": 12,
+        "height": 5,
+        "widget": {
+          "title": "Worker FILE_LOADS references (submitted load != success)",
+          "logsPanel": {
+            "filter": "resource.type=\"dataflow_step\" AND resource.labels.job_id=\"__JOB_ID__\" AND \"DATAFLOW_IO_PROGRESS\"",
+            "resourceNames": [
+              "projects/__PROJECT_ID__"
+            ]
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 29,
+        "width": 12,
+        "height": 5,
+        "widget": {
+          "title": "Worker errors and OOM evidence (not automatic diagnosis)",
+          "logsPanel": {
+            "filter": "resource.type=\"dataflow_step\" AND resource.labels.job_id=\"__JOB_ID__\" AND (severity>=ERROR OR \"OutOfMemoryError\" OR \"OOMKilled\" OR \"MemoryError\")",
+            "resourceNames": [
+              "projects/__PROJECT_ID__"
+            ]
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 34,
+        "width": 12,
+        "height": 3,
+        "widget": {
+          "title": "Known limits / 다음 확인",
+          "text": {
+            "format": "MARKDOWN",
+            "content": "BQ confirmed row count is **unsupported** here: load references mean SUBMITTED_REFERENCE_OBSERVED/current_state unknown; copy SUCCESS_OUTPUT_OBSERVED is a completion-output observation, not a live API status query. Open the recorded BQ job ID for its actual status.\npost_jdbc_output_rows is in namespace jdbc_export_progress and only exists after deploying the progress image. metric_name export spelling may differ: the chart intentionally shows all SDK user counters; inspect labels before narrowing it. Zero downstream output does not prove Oracle has not read rows.\nContainer memory is native measured bytes, not total memory GB-seconds or an invented percent. Missing memory series means unavailable, not healthy.\nComposer logs require the executor progress code; worker logs/counter require the new image/template. No custom/log-based metric is created."
+          }
+        }
+      }
+    ]
+  }
+}
