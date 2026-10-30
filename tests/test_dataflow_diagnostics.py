@@ -138,13 +138,13 @@ class OperatorTest(unittest.TestCase):
         regional = service.projects.return_value.locations.return_value
         regional.flexTemplates.return_value.launch.return_value.execute.return_value = launch or {'job': {'id': '123'}}
         regional.flexTemplates.return_value.launch.return_value.execute.side_effect = launch_error
-        regional.jobs.return_value.get.return_value.execute.side_effect = [{'currentState': s} for s in states]
+        regional.jobs.return_value.get.return_value.execute.side_effect = [s if isinstance(s, Exception) else {'currentState': s} for s in states]
         diagnostic = Mock(side_effect=diagnostic_error)
         env = {'BaseHook': Mock(get_connection=Mock(return_value=conn)), 'GCSHook': Mock(),
                'unused': None,
                '_jdbc_url': lambda *a: 'jdbc:url', '_safe_job_name': lambda x: x,
                'datetime': datetime, 'timezone': timezone, 'LOGGER': Mock(),
-               'collect_failure_diagnostics': diagnostic, 'redact': d.redact, 'json': json,
+               'ProgressReporter': Mock(), 'collect_failure_diagnostics': diagnostic, 'redact': d.redact, 'json': json,
                '_TERMINAL_STATES': {'JOB_STATE_DONE', 'JOB_STATE_FAILED'}, '_SUCCESS_STATES': {'JOB_STATE_DONE'},
                'time': Mock()}
         exec(execute_method(), env)
@@ -152,7 +152,7 @@ class OperatorTest(unittest.TestCase):
             gcp_conn_id='configured', impersonation_chain='impersonated', system_bucket='bucket', db_type='oracle',
             driver_jars='jar', destination_type='gcs', destination={'path':'gs://out'}, project_id='project', region='region',
             job_name_prefix='prefix', template_gcs_path='gs://template', service_account_email='worker',
-            subnetwork='subnet', staging_location='gs://staging', temp_location='gs://temp', log=Mock(), poll_interval_seconds=1)
+            subnetwork='subnet', staging_location='gs://staging', temp_location='gs://temp', log=Mock(), poll_interval_seconds=1, progress_log_interval_seconds=60)
         context = {'run_id':'run', 'dag':SimpleNamespace(dag_id='dag'), 'ts_nodash':'20260101T000000'}
         # googleapiclient is deliberately not required for offline tests.
         import sys
@@ -172,6 +172,16 @@ class OperatorTest(unittest.TestCase):
         diag.assert_not_called()
         self.assertEqual(result['job_id'], '123')
         # The launch identity remains ADC rather than switching to the configured GCS impersonation.
+
+    def test_status_poll_error_is_nonfatal_and_secret_free(self):
+        diag, result, error, env = self.run_operator(states=[PermissionError('password=private'), 'JOB_STATE_DONE'])
+        self.assertIsNone(error)
+        self.assertEqual(result['job_id'], '123')
+        diag.assert_not_called()
+        calls = str(env['ProgressReporter'].return_value.emit.call_args_list)
+        self.assertIn('PermissionError', calls)
+        self.assertNotIn('private', calls)
+        env['ProgressReporter'].return_value.poll.assert_any_call(job_state='JOB_STATE_DONE', final=True)
 
     def test_failed_state_collects_before_failure(self):
         diag, _, error, _ = self.run_operator(states=['JOB_STATE_FAILED'])

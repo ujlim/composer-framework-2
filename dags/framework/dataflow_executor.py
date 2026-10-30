@@ -1,6 +1,6 @@
 # Author: LIM UI JIN
 # Created: 2026-09-30
-# Updated: 2026-10-23
+# Updated: 2026-10-30
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from airflow.models import BaseOperator
 from airflow.providers.google.cloud.hooks.gcs import GCSHook
 
 from framework.dataflow_diagnostics import collect_failure_diagnostics, redact
+from framework.dataflow_progress import ProgressReporter, validate_progress_interval
 
 from framework.logger import task_failure_callback, task_success_callback
 from framework.models import LoadedConfig
@@ -61,8 +62,10 @@ class DataflowJdbcOperator(BaseOperator):
                  destination_type, destination, project_id, region, template_gcs_path,
                  system_bucket, subnetwork, service_account_email, staging_location=None,
                  temp_location=None, gcp_conn_id="google_cloud_default", impersonation_chain=None,
-                 poll_interval_seconds=30, job_name_prefix="jdbc-export", **kwargs):
+                 poll_interval_seconds=30, job_name_prefix="jdbc-export",
+                 progress_log_interval_seconds=60, **kwargs):
         super().__init__(**kwargs)
+        self.progress_log_interval_seconds = validate_progress_interval(progress_log_interval_seconds)
         self.sql = sql
         self.db_type = db_type
         self.connection_id = connection_id
@@ -197,12 +200,39 @@ class DataflowJdbcOperator(BaseOperator):
             diagnose()
             raise RuntimeError("Dataflow launch did not return job id; inspect launcher logs")
 
+        reporter = ProgressReporter(
+            logger=self.log, credentials=credentials, project_id=self.project_id,
+            region=self.region, job_id=job_id, dag_id=dag_id, run_id=run_id,
+            task_id=self.task_id, interval=self.progress_log_interval_seconds,
+            secrets=diagnostic_secrets,
+        )
+        reporter.emit(
+            "job_started", project_id=self.project_id, region=self.region,
+            destination_type=self.destination_type,
+            temp_location_configured=self.temp_location,
+            bq_file_prefix_expected=self.temp_location.rstrip("/") + "/bq_load/"
+                if self.destination_type == "bigquery" else None,
+            prefix_status="configured_only_not_observed", write_method="FILE_LOADS"
+                if self.destination_type == "bigquery" else "GCS",
+            progress_interval_seconds=self.progress_log_interval_seconds,
+            source_jdbc_rows="unknown", worker_memory_usage="unknown",
+        )
         while True:
-            current = service.projects().locations().jobs().get(
-                projectId=self.project_id, location=self.region, jobId=job_id
-            ).execute()
+            try:
+                current = service.projects().locations().jobs().get(
+                    projectId=self.project_id, location=self.region, jobId=job_id
+                ).execute()
+                if not isinstance(current, dict):
+                    raise ValueError("invalid job status object")
+            except Exception as exc:
+                # An unavailable status observation must not fail a still-running job.
+                reporter.emit("job_state_unavailable", error_type=type(exc).__name__, state="unknown")
+                reporter.poll(job_state="unknown")
+                time.sleep(max(self.poll_interval_seconds, 60))
+                continue
             state = current.get("currentState")
             LOGGER.info("Dataflow job=%s id=%s state=%s", job_name, job_id, state)
+            reporter.poll(job_state=state, final=state in _TERMINAL_STATES)
             if state in _TERMINAL_STATES:
                 if state not in _SUCCESS_STATES:
                     diagnose()
@@ -279,6 +309,7 @@ class DataflowExecutor:
             impersonation_chain=runtime.get("impersonation_chain"),
             poll_interval_seconds=int(options.get("poll_interval_seconds", 30)),
             job_name_prefix=str(options.get("job_name_prefix", grape_id)),
+            progress_log_interval_seconds=options.get("progress_log_interval_seconds", 60),
             retries=int(options.get("retries", 1)),
             retry_delay=timedelta(seconds=int(options.get("retry_delay_seconds", 300))),
             execution_timeout=timedelta(seconds=int(options.get("execution_timeout_seconds", 21600))),

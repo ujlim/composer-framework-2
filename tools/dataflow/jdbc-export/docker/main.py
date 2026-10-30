@@ -3,13 +3,17 @@ import csv
 import io
 import json
 import logging
+import os
+import socket
+import time
 
 import apache_beam as beam
 import google.auth
 from apache_beam.io.gcp.bigquery import WriteToBigQuery
 from apache_beam.io.jdbc import ReadFromJdbc
 from apache_beam.io.parquetio import WriteToParquet
-from apache_beam.options.pipeline_options import PipelineOptions
+from apache_beam.metrics.metric import Metrics
+from apache_beam.options.pipeline_options import PipelineOptions, GoogleCloudOptions
 from google.cloud import secretmanager, storage
 import pyarrow as pa
 
@@ -82,6 +86,117 @@ def parquet_schema(schema_json: str):
     return pa.schema(result)
 
 
+# Progress observations never contain row values, SQL or credentials.
+def _progress_identifier(value):
+    if not isinstance(value, str):
+        return "unknown"
+    # Do not retain signed URL queries, fragments or log-control characters.
+    value = value.split("?", 1)[0].split("#", 1)[0]
+    return "".join(c for c in value if c.isprintable())[:512]
+
+
+def _emit_progress(event):
+    """Best effort worker log; deliberately no exception/record repr on failure."""
+    try:
+        event = dict(event)
+        event.update(
+            observer_pid=os.getpid(),
+            observer_host=_progress_identifier(socket.gethostname()),
+            worker_id="unknown",
+            may_repeat_on_retry=True,
+        )
+        logging.info("DATAFLOW_IO_PROGRESS %s", json.dumps(event, sort_keys=True))
+    except Exception:
+        pass
+
+
+class ObservePostJdbcRows(beam.DoFn):
+    """Count rows AFTER Java ReadFromJdbc output; NOT Oracle cursor reads."""
+    def __init__(self):
+        try:
+            self._counter = Metrics.counter(
+                "jdbc_export_progress", "post_jdbc_output_rows")
+        except Exception:
+            self._counter = None
+
+    def process(self, row):
+        try:
+            if self._counter is not None:
+                self._counter.inc()
+        except Exception:
+            pass
+        yield row
+
+
+class ObserveFileLoadOutput(beam.DoFn):
+    """Sample actual FILE_LOADS side outputs, never scan GCS or list BQ jobs.
+
+    Throttling is per DoFn instance, not a global log rate. Worker restart or
+    bundle replay may repeat events. Samples are not an inventory or row count.
+    """
+    def __init__(self, kind, job_name="unknown", interval_seconds=60):
+        self.kind = kind
+        self.job_name = _progress_identifier(job_name)
+        self.interval_seconds = interval_seconds
+        self._last_logged = None
+        self._suppressed = 0
+
+    def process(self, element):
+        try:
+            now = time.monotonic()
+            if self._last_logged is not None and now - self._last_logged < self.interval_seconds:
+                self._suppressed += 1
+                return
+            destination, observed = element
+            event = dict(
+                event=self.kind, job_name=self.job_name,
+                destination=_progress_identifier(destination),
+                source="Beam 2.75.0 WriteResult FILE_LOADS output",
+                sample_only=True, suppressed_since_previous=self._suppressed,
+            )
+            if self.kind == "gcs_temp_file_observed":
+                uri, size = observed
+                # The output is emitted after a file writer closes. This does
+                # not prove that a BigQuery load job has started or succeeded.
+                if not isinstance(uri, str) or not uri.startswith("gs://"):
+                    return
+                event.update(
+                    gcs_uri=_progress_identifier(uri),
+                    size_bytes=size if type(size) is int and size >= 0 else "unknown",
+                    state="FILE_CLOSED_OUTPUT_OBSERVED",
+                )
+            else:
+                # In Beam 2.75.0, public load refs come from ONGOING_JOBS,
+                # while copy refs come from the completed main output.
+                # This observer itself never queries BigQuery jobs.get.
+                def field(name):
+                    return observed.get(name) if isinstance(observed, dict) else getattr(observed, name, None)
+                job_id = field("jobId")
+                if not isinstance(job_id, str) or not job_id:
+                    return
+                event.update(
+                    bq_project=_progress_identifier(field("projectId")),
+                    bq_job_id=_progress_identifier(job_id),
+                    bq_location=_progress_identifier(field("location")),
+                    state=("SUBMITTED_REFERENCE_OBSERVED"
+                           if self.kind == "bq_load_reference_observed"
+                           else "SUCCESS_OUTPUT_OBSERVED"),
+                    current_state="unknown",
+                    status_source=(
+                        "Beam ONGOING_JOBS reference; completion/current state unknown"
+                        if self.kind == "bq_load_reference_observed"
+                        else "Beam copy completion output; not a live BigQuery status query"),
+                )
+            _emit_progress(event)
+            self._last_logged = now
+            self._suppressed = 0
+        except Exception:
+            # Observability must not alter success/failure of the data path.
+            pass
+        return
+        yield  # Keep this a DoFn generator without emitting extra data.
+
+
 def run():
     parser = argparse.ArgumentParser()
     parser.add_argument("--db_type", required=True, choices=["db2", "oracle", "vertica"])
@@ -114,6 +229,21 @@ def run():
     logging.info("JDBC export db_type=%s query_uri=%s destination=%s", args.db_type, args.query_uri, args.destination_type)
 
     options = PipelineOptions(pipeline_args, save_main_session=True)
+    progress_job_name = "unknown"
+    try:
+        cloud_options = options.view_as(GoogleCloudOptions)
+        progress_job_name = _progress_identifier(cloud_options.job_name)
+        _emit_progress({
+            "event": "pipeline_progress_configuration",
+            "job_name": progress_job_name,
+            "configured_temp_location": _progress_identifier(cloud_options.temp_location),
+            "file_loads_location_note": "Configured base only; actual file URI logged from WriteResult",
+            "row_counter": "jdbc_export_progress.post_jdbc_output_rows",
+            "counter_scope": "AFTER Java ReadFromJdbc; not Oracle cursor reads or committed BQ rows",
+            "zero_counter_note": "Unknown upstream progress: default JDBC reparallelization may delay output",
+        })
+    except Exception:
+        pass
     with beam.Pipeline(options=options) as pipeline:
         rows = pipeline | "Read JDBC" >> ReadFromJdbc(
             table_name="jdbc_export",
@@ -124,6 +254,8 @@ def run():
             password=password,
             driver_jars=args.driver_jars,
         )
+
+        rows = rows | "Observe Post JDBC Output" >> beam.ParDo(ObservePostJdbcRows())
 
         if args.destination_type == "gcs":
             if not args.output_path:
@@ -151,7 +283,7 @@ def run():
         else:
             if not args.output_table or not args.bq_schema:
                 raise ValueError("output_table and bq_schema are required for BigQuery destination")
-            (
+            write_result = (
                 rows
                 | "To BigQuery Dict" >> beam.Map(row_dict)
                 | "Write BigQuery" >> WriteToBigQuery(
@@ -162,6 +294,15 @@ def run():
                     method=WriteToBigQuery.Method.FILE_LOADS,
                 )
             )
+            _ = (write_result.destination_file_pairs
+                 | "Observe GCS Load Files" >> beam.ParDo(ObserveFileLoadOutput(
+                     "gcs_temp_file_observed", progress_job_name)))
+            _ = (write_result.destination_load_jobid_pairs
+                 | "Observe BQ Load References" >> beam.ParDo(ObserveFileLoadOutput(
+                     "bq_load_reference_observed", progress_job_name)))
+            _ = (write_result.destination_copy_jobid_pairs
+                 | "Observe BQ Copy Completions" >> beam.ParDo(ObserveFileLoadOutput(
+                     "bq_copy_completion_observed", progress_job_name)))
 
 
 if __name__ == "__main__":
