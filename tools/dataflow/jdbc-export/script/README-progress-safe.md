@@ -86,3 +86,16 @@ Cloud Build 콘솔에서 실제 빌드 상태를 확인하십시오. 실패를 �
 - https://docs.cloud.google.com/artifact-registry/docs/reference/rest/v1/projects.locations.repositories.packages.tags/get
 
 - https://docs.cloud.google.com/sdk/gcloud/reference/builds/submit (region/source staging/log directory)
+
+### print-only 출력 오류 수정
+
+`Print-only output is not JSON`으로 중단됐다면 기존 빌더가 gcloud 기본 YAML 출력을 JSON으로
+가정한 문제일 수 있습니다. 수정본은 `--print-only --format=json`을 명시하고,
+결과가 JSON 문자열이면 한 번만 추가 디코딩합니다. 그 뒤 기존 image/PYTHON/metadata 검증을
+그대로 적용합니다. YAML/배너를 임의로 잘라내거나 검증을 우회하지 않습니다.
+이 오류 경로는 Cloud Build 제출과 GCS 템플릿 업로드 전입니다.
+
+공식 Cloud SDK 591.0.0 core/deps 배포본의 `BuildAndStoreFlexTemplateFile`과 resource printer를
+네트워크 연결 금지 상태에서 실행해 기본 출력 `|-` YAML 실패와 명시 JSON + 1회 추가디코딩 성공을
+재현했습니다. SDK 설치/인증/GCP 빌드는 수행하지 않았습니다. 다른 SDK 버전의 실제 실행은 별도 검증 대상입니다.
+공식 형식 문서: https://docs.cloud.google.com/sdk/gcloud/reference/topic/formats

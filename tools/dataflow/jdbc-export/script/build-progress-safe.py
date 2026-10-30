@@ -97,7 +97,7 @@ def publish(args):
     if args.gcs_log_dir:
         build.append('--gcs-log-dir=' + args.gcs_log_dir)
     spec = ['gcloud', 'dataflow', 'flex-template', 'build', template, '--project=' + args.project,
-            '--image=' + image, '--sdk-language=PYTHON', '--metadata-file=' + str(DOCKER_DIR / 'metadata.json'), '--print-only']
+            '--image=' + image, '--sdk-language=PYTHON', '--metadata-file=' + str(DOCKER_DIR / 'metadata.json'), '--print-only', '--format=json']
     print(json.dumps({'mode': 'EXECUTE' if args.execute else 'DRY_RUN_OFFLINE', 'image': image,
                       'template': template, 'immutable_tags_required': True, 'build_region': args.build_region or args.region,
                       'source_staging': args.gcs_source_staging_dir or '<REQUIRED FOR EXECUTE>',
@@ -120,6 +120,10 @@ def publish(args):
     # Print-only never writes GCS; validate before the paid Cloud Build operation.
     try:
         container_spec = json.loads(run(spec))
+        # SDK print-only returns a JSON string; resource formatting may encode it.
+        # Accept one wrapper only, never strip arbitrary text or relax validation.
+        if isinstance(container_spec, str):
+            container_spec = json.loads(container_spec)
     except ValueError:
         raise SafetyError('Print-only output is not JSON; stopped before Cloud Build') from None
     if not isinstance(container_spec, dict) or container_spec.get('image') != image:

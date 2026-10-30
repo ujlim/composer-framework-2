@@ -76,7 +76,7 @@ class SafeBuildTest(unittest.TestCase):
     def test_happy_path_preconditions_and_print_only(self):
         read,run=self.publish()
         commands=[c.args[0] for c in run.call_args_list]
-        self.assertIn('--print-only',commands[0]);self.assertIn('--if-generation-match=0',commands[-1])
+        self.assertIn('--print-only',commands[0]);self.assertIn('--format=json',commands[0]);self.assertIn('--if-generation-match=0',commands[-1])
         self.assertEqual(commands[1][1:3],['builds','submit'])
         self.assertEqual(read.call_count,7)
         self.assertTrue(read.call_args_list[2].kwargs['missing_ok'])
@@ -95,6 +95,23 @@ class SafeBuildTest(unittest.TestCase):
             reads=[self.repo,{},None,None];reads[index]=b.SafetyError('HTTP403')
             with patch.object(b,'read_json',side_effect=reads),patch.object(b,'run') as run,contextlib.redirect_stdout(io.StringIO()),self.assertRaises(b.SafetyError):b.publish(self.args)
             run.assert_not_called()
+
+    def test_sdk_json_string_wrapper_is_decoded_once(self):
+        image=b.targets(self.args)[0]
+        doc={'image':image,'sdkInfo':{'language':'PYTHON'},'metadata':{}}
+        output=json.dumps(json.dumps(doc))
+        reads=[self.repo,{},None,None,{},self.repo,{'version':'x/versions/sha256:a'}]
+        with patch.object(b,'read_json',side_effect=reads),patch.object(b,'run',side_effect=[output,'','']) as run,contextlib.redirect_stdout(io.StringIO()):b.publish(self.args)
+        self.assertEqual(run.call_count,3)
+
+    def test_non_json_and_extra_wrappers_fail_before_build(self):
+        image=b.targets(self.args)[0]
+        doc={'image':image,'sdkInfo':{'language':'PYTHON'},'metadata':{}}
+        for output in ['image: x\nmetadata: {}\n', 'NOTICE\n'+json.dumps(doc),
+                       json.dumps(json.dumps(json.dumps(doc))), '[]', 'null',
+                       json.dumps('not-json')]:
+            with self.subTest(output=output),patch.object(b,'read_json',side_effect=[self.repo,{},None,None,{}]),patch.object(b,'run',return_value=output) as run,contextlib.redirect_stdout(io.StringIO()),self.assertRaises(b.SafetyError):b.publish(self.args)
+            self.assertEqual(run.call_count,1)
 
     def test_bad_spec_rejected_before_build(self):
         for doc in [{}, {'image':'old'}, {'image':b.targets(self.args)[0],'sdkInfo':{'language':'JAVA'},'metadata':{}}]:
