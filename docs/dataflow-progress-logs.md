@@ -64,8 +64,11 @@ grape_defaults:
 
 1. Composer에 수정 executor와 신규 dataflow_progress.py를 함께 비교 병합 배포.
    기존 dataflow_diagnostics.py는 유지해야 합니다.
-2. launcher main.py 변경은 새 이미지 태그 + 새 Flex template 경로로 빌드하고 테스트 Vine만 참조.
-   기존 build scripts 기본 :v1/공용 template 경로를 그대로 실행하여 덮어쓰지 마십시오.
+2. launcher main.py는 B 전용 `tools/dataflow/jdbc-export/script/build-progress-safe.py`로만 빌드합니다.
+   먼저 offline dry-run을 확인하고, immutable 저장소 등 사전조건을 충족한 운영자가 --execute를 선택합니다.
+   이미지 이름 jdbc-export-progress와 별도 버전 템플릿을 사용하며 테스트 Vine만 참조합니다.
+   전체 절차/권한/실패 후 복구는 같은 디렉터리 README-progress-safe.md를 따르십시오.
+   기존 build scripts 기본 :v1/공용 template 경로를 그대로 실행하지 마십시오.
    기존 진단 파일을 통째로 오래된 버전으로 되돌리지 마십시오.
 3. 새 Job에서 `Dataflow progress`(Composer)와 `DATAFLOW_IO_PROGRESS`(Dataflow worker 로그)를
    같은 job_id/resource.labels.job_id 또는 job_name으로 연결합니다.
