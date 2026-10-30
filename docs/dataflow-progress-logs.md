@@ -1,8 +1,11 @@
 # Dataflow JDBC 진행 관측 로그 (2026-10-30)
 
 기준: `feature/26.1023.dataflow-error-logs` / `d136c25ca763626015b88c71a563d74f96da1b43`.
-이 변경은 원인 파악용입니다. 10/29 machine/fetch 브랜치를 합치지 않았고,
-JDBC query/fetch/output_parallelization, BigQuery FILE_LOADS, 워커 설정을 바꾸지 않습니다.
+진행로그는 원인 파악용입니다. 10/29 machine/fetch 브랜치를 통째로 합치지 않았습니다.
+JDBC query/fetch/output_parallelization 및 BigQuery FILE_LOADS는 그대로입니다.
+추가로 runtime.dataflow.machine_type만 선택 지원합니다: 명시한 Vine의 새 Job에만 적용하고
+미지정/null이면 machineType 필드를 생략하여 기존 동작을 유지합니다. fetch_size 설정 기능은 포함하지 않습니다.
+머신 유형 적용/폐기된 이전 예제 주의는 docs/dataflow-machine-type.md를 참조하십시오.
 실행 배포본과 원문이 다를 수 있으므로 배포 시 비교 병합하여 추가 진단을 보존하십시오.
 
 ## 무엇이 기록되는가

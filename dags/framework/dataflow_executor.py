@@ -63,8 +63,13 @@ class DataflowJdbcOperator(BaseOperator):
                  system_bucket, subnetwork, service_account_email, staging_location=None,
                  temp_location=None, gcp_conn_id="google_cloud_default", impersonation_chain=None,
                  poll_interval_seconds=30, job_name_prefix="jdbc-export",
-                 progress_log_interval_seconds=60, **kwargs):
+                 progress_log_interval_seconds=60, machine_type=None, **kwargs):
         super().__init__(**kwargs)
+        if machine_type is not None:
+            if not isinstance(machine_type, str) or not machine_type.strip():
+                raise ValueError("runtime.dataflow.machine_type must be a non-empty string")
+            machine_type = machine_type.strip()
+        self.machine_type = machine_type
         self.progress_log_interval_seconds = validate_progress_interval(progress_log_interval_seconds)
         self.sql = sql
         self.db_type = db_type
@@ -156,6 +161,8 @@ class DataflowJdbcOperator(BaseOperator):
                 },
             }
         }
+        if self.machine_type is not None:
+            body["launchParameter"]["environment"]["machineType"] = self.machine_type
         LOGGER.info("Launching Dataflow job=%s query_uri=%s", job_name, query_uri)
         launch_time = datetime.now(timezone.utc)
         job_id = None
@@ -209,6 +216,7 @@ class DataflowJdbcOperator(BaseOperator):
         reporter.emit(
             "job_started", project_id=self.project_id, region=self.region,
             destination_type=self.destination_type,
+            machine_type_configured=self.machine_type or "<service-default>",
             temp_location_configured=self.temp_location,
             bq_file_prefix_expected=self.temp_location.rstrip("/") + "/bq_load/"
                 if self.destination_type == "bigquery" else None,
@@ -301,6 +309,7 @@ class DataflowExecutor:
             task_id=grape_id, dag=dag, sql=sql, db_type=db_type, connection_id=str(connection_id),
             driver_jars=str(driver_jars), password_secret=source.get("password_secret"),
             destination_type=destination_type, destination=destination,
+            machine_type=df.get("machine_type"),
             project_id=str(df["project_id"]), region=str(df["region"]),
             template_gcs_path=str(df["template_gcs_path"]), system_bucket=str(df["system_bucket"]),
             subnetwork=str(df["subnetwork"]), service_account_email=str(df["service_account_email"]),
