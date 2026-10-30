@@ -1,4 +1,4 @@
-# Author: LIM UI JIN
+# Author: 임의진 (LIM UI JIN)
 # Created: 2026-10-30
 """Offline API/clock doubles; no Dataflow, JDBC or BigQuery integration claims."""
 import importlib.util
@@ -46,7 +46,7 @@ class ProgressTests(unittest.TestCase):
         self.session.request.side_effect = [x if isinstance(x, Exception) else Response(x) for x in responses]
         self.logger = Mock()
         values = dict(logger=self.logger, credentials=object(), project_id='p', region='r', job_id='j',
-                      dag_id='dag', run_id='run', task_id='task',
+                      dag_id='dag', run_id='run', task_id='task', details=True,
                       session_factory=lambda _: self.session, monotonic=lambda: self.tick,
                       now=lambda: datetime(2026, 10, 30, 0, 5, tzinfo=timezone.utc))
         values.update(kwargs)
@@ -140,6 +140,8 @@ class ProgressTests(unittest.TestCase):
                          {'stages':[{'stageId':'s'}]}, {}])
         r.poll()
         for call in self.logger.info.call_args_list:
+            if "detail" not in call.args[0]:
+                continue
             self.assertLessEqual(len(call.args[1].encode('utf-8')),48000)
             json.loads(call.args[1])
         r.emit('unicode', arbitrary='한'*30000)

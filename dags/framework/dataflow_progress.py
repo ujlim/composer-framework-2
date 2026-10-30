@@ -1,5 +1,6 @@
-# Author: LIM UI JIN
+# Author: 임의진 (LIM UI JIN)
 # Created: 2026-10-30
+# Updated: 2026-10-30
 """Bounded, fail-open Dataflow observations, never a source-row-count estimator."""
 from __future__ import annotations
 
@@ -54,7 +55,7 @@ def _metrics(values, source, stage_id=None):
         if not isinstance(name, dict):
             continue
         label = str(name.get('name', ''))
-        if not re.search(r'element|byte|post_jdbc|rows_emitted', label, re.I):
+        if not re.search(r'element.?count|byte|post_jdbc|rows_emitted', label, re.I):
             continue
         context = name.get('context') or {}
         if not isinstance(context, dict):
@@ -81,7 +82,11 @@ class ProgressReporter:
     """Independent read-only observer using the existing launch ADC credentials."""
     def __init__(self, *, logger, credentials, project_id, region, job_id,
                  dag_id, run_id, task_id, interval=60, secrets=(),
-                 session_factory=None, monotonic=time.monotonic, now=None):
+                 session_factory=None, monotonic=time.monotonic, now=None, details=False):
+        if type(details) is not bool:
+            raise ValueError("options.progress_log_details must be a boolean")
+        self.details = details
+        self.last_job_state = None
         self.logger = logger
         self.credentials = credentials
         self.project_id, self.region, self.job_id = project_id, region, job_id
@@ -99,7 +104,102 @@ class ProgressReporter:
         self.stage_names = {}
         self.description_checked = False
 
+    def job_state(self, state):
+        """Emit state transitions only; status polling frequency is unchanged."""
+        state = state or 'unknown'
+        if state != self.last_job_state:
+            previous = self.last_job_state
+            self.last_job_state = state
+            self.emit('job_state_changed', job_state=state, previous_state=previous)
+
     def emit(self, event, **fields):
+        try:
+            summary = self._summary(event, fields)
+            safe = redact(summary, self.secrets)
+            # Bound UTF-8 after redaction, including known-secret expansion.
+            safe = safe.encode('utf-8')[:2400].decode('utf-8', 'ignore')
+            method = self.logger.warning if event in {'observer_unavailable', 'job_state_unavailable'} else self.logger.info
+            method('Dataflow progress %s', safe)
+        except Exception:
+            pass
+        if self.details:
+            self._emit_detail(event, **fields)
+
+    def _summary(self, event, fields):
+        def short(value, limit=80):
+            return re.sub(r'[\x00-\x1f\x7f]+', ' ', str(value))[:limit]
+        state_names = {
+            'JOB_STATE_RUNNING':'실행 중', 'JOB_STATE_DONE':'완료', 'JOB_STATE_FAILED':'실패',
+            'JOB_STATE_PENDING':'시작 대기', 'JOB_STATE_QUEUED':'대기열',
+            'JOB_STATE_CANCELLED':'취소', 'JOB_STATE_DRAINED':'드레인 종료',
+            'JOB_STATE_UPDATED':'다른 Job으로 교체', 'unknown':'미확인',
+            'EXECUTION_STATE_RUNNING':'실행 중', 'EXECUTION_STATE_COMPLETE':'완료',
+            'EXECUTION_STATE_FAILED':'실패', 'EXECUTION_STATE_NOT_STARTED':'시작 전',
+        }
+        snapshot = fields.get('snapshot') or {}
+        state = fields.get('job_state') or fields.get('state') or snapshot.get('job_state') or 'unknown'
+        labels = {'job_started':'시작', 'snapshot':'진행', 'final_snapshot':'최종 관측',
+                  'job_state_changed':'상태 변경', 'observer_unavailable':'관측 오류',
+                  'job_state_unavailable':'상태 조회 오류'}
+        parts = [f"[{labels.get(event, '안내')}] Job={short(self.job_id,128)} 작업={short(self.identity['task_id'],60)}",
+                 '상태=' + state_names.get(state, short(state,60))]
+        if event == 'job_started':
+            parts += ['머신=' + short(fields.get('machine_type_configured', '서비스 기본값')).replace('<service-default>', '서비스 기본값'),
+                      '적재방식=' + short(fields.get('write_method', '미확인')),
+                      '원천읽기/BQ확정적재=미확인(후단 0도 미읽음을 뜻하지 않음)']
+        elif event in {'observer_unavailable', 'job_state_unavailable'}:
+            parts += ['조회 실패=' + short(fields.get('error_type', '미확인')),
+                      '실제 작업 실패 여부는 별도 확인; 자동 재시도로 단정하지 않음']
+        elif event == 'job_state_changed':
+            previous = fields.get('previous_state')
+            if previous is not None:
+                parts += ['이전=' + state_names.get(previous, short(previous,60))]
+        elif event in {'snapshot', 'final_snapshot'}:
+            parts += ['원천읽기/BQ확정적재=미확인']
+            stages = snapshot.get('stages') or []
+            if stages:
+                counts = {key:sum(s.get('state') == key for s in stages) for key in
+                          ['EXECUTION_STATE_RUNNING','EXECUTION_STATE_COMPLETE','EXECUTION_STATE_FAILED']}
+                count_text = ', '.join(label + ' ' + str(counts[key]) for key, label in
+                    [('EXECUTION_STATE_RUNNING','실행'),('EXECUTION_STATE_COMPLETE','완료'),('EXECUTION_STATE_FAILED','실패')] if counts[key])
+                others = len(stages) - sum(counts.values())
+                if others:
+                    count_text += (', ' if count_text else '') + f'기타/미확인 {others}'
+                parts += [f"관측 단계 {len(stages)}개(전체 보장 아님): {count_text}"]
+                running = [s for s in stages if s.get('state') == 'EXECUTION_STATE_RUNNING']
+                if running:
+                    def active(s):
+                        elapsed = s.get('elapsed_seconds')
+                        duration = f'{int(elapsed)}초' if type(elapsed) in (int,float) and math.isfinite(elapsed) else '미확인'
+                        return short(s.get('stage_id'),24) + '(경과 ' + duration + ')'
+                    parts += ['실행 단계=' + ', '.join(active(s) for s in running[:3]) + (' 외 생략' if len(running)>3 else '')]
+                changes = [s for s in stages if s.get('state_changed')]
+                if changes:
+                    parts += ['단계 변경=' + ', '.join(short(s.get('stage_id'),24) + ':' + state_names.get(s.get('state'), short(s.get('state','unknown').replace('EXECUTION_STATE_',''),18)) for s in changes[:3]) + (' 외 생략' if len(changes)>3 else '')]
+            else:
+                parts += ['단계=미확인']
+            # One job-level counter identity only. Never sum tentative/committed or transforms.
+            metrics = [m for m in (snapshot.get('metrics') or []) if m.get('name') == 'post_jdbc_output_rows' and m.get('scalar') is not None]
+            identities = {json.dumps([m.get('origin'), {k:v for k,v in (m.get('context') or {}).items() if k != 'tentative'}],sort_keys=True) for m in metrics}
+            if len(identities) == 1:
+                selected = next((m for m in metrics if not m.get('tentative')), metrics[0])
+                mark = 'tentative' if selected.get('tentative') else 'tentative 아님'
+                parts += [f"JDBC 후단 관측={selected['scalar']} ({mark}; BQ 적재건수 아님)"]
+            elif len(identities) > 1:
+                parts += ['JDBC 후단 관측=복수 시리즈(합산 안 함)']
+            else:
+                parts += ['JDBC 후단 관측=미확인']
+            missing = snapshot.get('unavailable') or []
+            if missing or snapshot.get('partial'):
+                parts += [f'일부 관측 누락(API {len(missing)}개); 상세는 진단옵션']
+            if fields.get('cached'):
+                age = fields.get('snapshot_age_seconds')
+                parts += ['캐시 관측(현재 최종값 아님), 경과=' + (str(int(age))+'초' if type(age) in (int,float) and math.isfinite(age) else '미확인')]
+            if snapshot is None or not snapshot:
+                parts += ['관측자료 없음']
+        return ' | '.join(parts)
+
+    def _emit_detail(self, event, **fields):
         try:
             payload = dict(event=event, **self.identity, **fields)
             if len(json.dumps(payload, default=str)) > 48000:
@@ -121,7 +221,7 @@ class ProgressReporter:
                     log_truncated=True, observation='unknown; snapshot exceeded byte budget'),
                     ensure_ascii=False)
                 rendered = redact(rendered, self.secrets)
-            self.logger.info('Dataflow progress %s', rendered)
+            self.logger.info('Dataflow progress detail %s', rendered)
         except Exception:
             pass
 
@@ -132,7 +232,7 @@ class ProgressReporter:
             self.emit('observer_unavailable', error_type=type(exc).__name__, final=final,
                       observation='unknown', job_state=job_state)
             if final:
-                self.emit('final_snapshot', snapshot=self.last_snapshot, cached=True,
+                self.emit('final_snapshot', snapshot=self.last_snapshot, cached=True, job_state=job_state,
                           observation='unknown' if self.last_snapshot is None else 'last_observed')
             return None
 

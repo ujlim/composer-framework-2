@@ -180,3 +180,11 @@ PromQL 공식 근거:
 - https://prometheus.io/docs/prometheus/latest/querying/operators/
 - https://prometheus.io/docs/prometheus/latest/querying/basics/#staleness
 - https://docs.cloud.google.com/dataflow/docs/guides/troubleshoot-oom
+
+
+### Composer 로그 가독성 (2026-10-30, 임의진)
+
+기본 한국어 요약도 `Dataflow progress`와 Job ID를 포함하므로 기존 Composer logs 패널은 그대로 조회됩니다.
+긴 snapshot JSON은 Vine `grape_defaults.progress_log_details: true` 또는 개별 `grapes[].options`에서
+선택 출력합니다(기본false, boolean만). 패널은 JSON필드나 카운터를 파싱하지 않으며 native metric 차트는 변경 없습니다.
+기본 요약의 후단 카운터는 원천 읽기/BigQuery 확정적재 수가 아닙니다. 이 표시 변경만으로 이미지 재빌드가 필요하지 않습니다.

@@ -1,5 +1,6 @@
-# Author: LIM UI JIN
+# Author: 임의진 (LIM UI JIN)
 # Created: 2026-10-23
+# Updated: 2026-10-30
 
 import ast
 import importlib.util
@@ -166,7 +167,7 @@ class OperatorTest(unittest.TestCase):
             gcp_conn_id='configured', impersonation_chain='impersonated', system_bucket='bucket', db_type='oracle',
             driver_jars='jar', destination_type='gcs', destination={'path':'gs://out'}, project_id='project', region='region',
             job_name_prefix='prefix', template_gcs_path='gs://template', service_account_email='worker',
-            subnetwork='subnet', staging_location='gs://staging', temp_location='gs://temp', log=Mock(), poll_interval_seconds=1, progress_log_interval_seconds=60, machine_type=None)
+            subnetwork='subnet', staging_location='gs://staging', temp_location='gs://temp', log=Mock(), poll_interval_seconds=1, progress_log_interval_seconds=60, progress_log_details=False, machine_type=None)
         context = {'run_id':'run', 'dag':SimpleNamespace(dag_id='dag'), 'ts_nodash':'20260101T000000'}
         # googleapiclient is deliberately not required for offline tests.
         import sys

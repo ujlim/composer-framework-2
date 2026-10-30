@@ -1,4 +1,4 @@
-# Author: LIM UI JIN
+# Author: 임의진 (LIM UI JIN)
 # Created: 2026-09-30
 # Updated: 2026-10-30
 
@@ -63,12 +63,15 @@ class DataflowJdbcOperator(BaseOperator):
                  system_bucket, subnetwork, service_account_email, staging_location=None,
                  temp_location=None, gcp_conn_id="google_cloud_default", impersonation_chain=None,
                  poll_interval_seconds=30, job_name_prefix="jdbc-export",
-                 progress_log_interval_seconds=60, machine_type=None, **kwargs):
+                 progress_log_interval_seconds=60, progress_log_details=False, machine_type=None, **kwargs):
         super().__init__(**kwargs)
         if machine_type is not None:
             if not isinstance(machine_type, str) or not machine_type.strip():
                 raise ValueError("runtime.dataflow.machine_type must be a non-empty string")
             machine_type = machine_type.strip()
+        if type(progress_log_details) is not bool:
+            raise ValueError("options.progress_log_details must be a boolean")
+        self.progress_log_details = progress_log_details
         self.machine_type = machine_type
         self.progress_log_interval_seconds = validate_progress_interval(progress_log_interval_seconds)
         self.sql = sql
@@ -211,7 +214,7 @@ class DataflowJdbcOperator(BaseOperator):
             logger=self.log, credentials=credentials, project_id=self.project_id,
             region=self.region, job_id=job_id, dag_id=dag_id, run_id=run_id,
             task_id=self.task_id, interval=self.progress_log_interval_seconds,
-            secrets=diagnostic_secrets,
+            secrets=diagnostic_secrets, details=self.progress_log_details,
         )
         reporter.emit(
             "job_started", project_id=self.project_id, region=self.region,
@@ -239,7 +242,7 @@ class DataflowJdbcOperator(BaseOperator):
                 time.sleep(max(self.poll_interval_seconds, 60))
                 continue
             state = current.get("currentState")
-            LOGGER.info("Dataflow job=%s id=%s state=%s", job_name, job_id, state)
+            reporter.job_state(state)
             reporter.poll(job_state=state, final=state in _TERMINAL_STATES)
             if state in _TERMINAL_STATES:
                 if state not in _SUCCESS_STATES:
@@ -319,6 +322,7 @@ class DataflowExecutor:
             poll_interval_seconds=int(options.get("poll_interval_seconds", 30)),
             job_name_prefix=str(options.get("job_name_prefix", grape_id)),
             progress_log_interval_seconds=options.get("progress_log_interval_seconds", 60),
+            progress_log_details=options.get("progress_log_details", False),
             retries=int(options.get("retries", 1)),
             retry_delay=timedelta(seconds=int(options.get("retry_delay_seconds", 300))),
             execution_timeout=timedelta(seconds=int(options.get("execution_timeout_seconds", 21600))),

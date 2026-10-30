@@ -1,5 +1,7 @@
 # Dataflow JDBC 진행 관측 로그 (2026-10-30)
 
+작성자: 임의진 (LIM UI JIN) · 수정일: 2026-10-30
+
 기준: `feature/26.1023.dataflow-error-logs` / `d136c25ca763626015b88c71a563d74f96da1b43`.
 진행로그는 원인 파악용입니다. 10/29 machine/fetch 브랜치를 통째로 합치지 않았습니다.
 JDBC query/fetch/output_parallelization 및 BigQuery FILE_LOADS는 그대로입니다.
@@ -8,7 +10,43 @@ JDBC query/fetch/output_parallelization 및 BigQuery FILE_LOADS는 그대로입�
 머신 유형 적용/폐기된 이전 예제 주의는 docs/dataflow-machine-type.md를 참조하십시오.
 실행 배포본과 원문이 다를 수 있으므로 배포 시 비교 병합하여 추가 진단을 보존하십시오.
 
-## 무엇이 기록되는가
+## 기본 로그는 한국어 요약, 상세 JSON은 선택
+
+기본값은 짧은 한국어 한 줄입니다. Job ID/작업/상태, 관측된 실행·완료·실패 단계 수와 실행단계 ID/경과,
+관측 단계 변경, 후단 카운터의 한 시리즈만 표시합니다. 단계 수는 조회 표본이며 전체 작업 진행률이 아닙니다.
+원천 JDBC 읽기와 BigQuery 확정 적재 건수는 계속 **미확인**입니다. `JDBC 후단 관측`은 ReadFromJdbc 이후
+카운터이며 0도 원천 미읽음을 뜻하지 않습니다. tentative/비tentative를 합산하지 않고, 동일 정체성에서는
+비tentative 변형 하나만 선택합니다. 서로 다른 transform 시리즈가 있으면 수치를 합산하지 않습니다.
+
+```yaml
+grape_defaults:
+  progress_log_interval_seconds: 60  # 기본60, 실제 정수>=60
+  progress_log_details: false        # 신규, 기본false; 실제 YAML boolean
+# 개별 grapes[].options에도 같은 키를 지정해 override 가능
+```
+
+`progress_log_details: true`이면 같은 주기에 기존 event/identity/snapshot 구조의 상세 JSON을 추가 출력합니다.
+문자열 `"true"`, 숫자1/null은 허용하지 않습니다. 기본 false에서는 긴 내부 단계이름, API null 목록,
+worker 표본·긴 metric 배열을 INFO JSON으로 쏟지 않습니다. 원래 API 관측 자료는 메모리에 유지됩니다.
+상세옵션은 Composer 로그 표시만 바꾸며 Dataflow 요청/적재/워커/메트릭 수집 주기를 변경하지 않습니다.
+`ExecutionTime_ProcessElement` 같은 실행시간 metric은 element count로 선택하지 않습니다.
+
+일반 상태는 바뀔 때만 별도로 기록하고, 진행 요약은 기존 최소60초 heartbeat를 유지합니다.
+상태 조회 실패/observer 오류는 WARNING 요약, 종료는 최종 관측 요약으로 남깁니다.
+최종 관측이 캐시이면 경과와 ‘현재 최종값 아님’을 명시합니다. 동일 수치가 계속 보여도 정체/재시도라고
+판정하지 않습니다. 상세 JSON에는 원래 raw state/context/tentative/source/updateTime 등이 보존됩니다.
+
+기본 요약은 마스킹 후2400 UTF-8 bytes 이내, 상세는 기존48KB 이내입니다. 로그 실패는 본 작업을 중단하지 않습니다.
+기존 대시보드는 `Dataflow progress`와 Job ID 문자열을 검색하므로 기본/상세 모두 조회됩니다.
+외부에서 기존 JSON 필드를 직접 파싱하던 별도 소비자가 있다면 상세옵션을 켜야 합니다.
+기존 로그패널은 그대로이며 신규 dashboard 재생성도 필요 없습니다.
+
+**이미 B launcher/이미지/Composer가 배포된 환경에서 이번 가독성 변경은 Composer만 재배포하면 됩니다.**
+`dataflow_executor.py`, `dataflow_progress.py`를 함께 비교 병합하고 기존 `dataflow_diagnostics.py`를 유지합니다.
+JDBC 이미지를 다시 빌드할 필요가 없습니다. 다만 B를 최초 설치하는 환경의 launcher 이미지/템플릿 준비는
+기존 배포 절차대로 별도로 필요합니다. 운영 배포·실제 로그 검증은 이번 코드 작업에서 수행하지 않았습니다.
+
+## 상세 옵션에서 기록되는 관측 자료
 
 - Composer: dag/run/task/job와 observer PID, 설정된 temp location, 예상 bq_load 부모 prefix,
   실행 단계의 실제 API state/start/end/경과, 이전 관측 state와 변화 여부.
