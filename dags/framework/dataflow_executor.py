@@ -58,8 +58,13 @@ class DataflowJdbcOperator(BaseOperator):
                  destination_type, destination, project_id, region, template_gcs_path,
                  system_bucket, subnetwork, service_account_email, staging_location=None,
                  temp_location=None, gcp_conn_id="google_cloud_default", impersonation_chain=None,
-                 poll_interval_seconds=30, job_name_prefix="jdbc-export", **kwargs):
+                 poll_interval_seconds=30, job_name_prefix="jdbc-export", machine_type=None, **kwargs):
         super().__init__(**kwargs)
+        if machine_type is not None:
+            if not isinstance(machine_type, str) or not machine_type.strip():
+                raise ValueError("runtime.dataflow.machine_type must be a non-empty string")
+            machine_type = machine_type.strip()
+        self.machine_type = machine_type
         self.sql = sql
         self.db_type = db_type
         self.connection_id = connection_id
@@ -146,6 +151,8 @@ class DataflowJdbcOperator(BaseOperator):
                 },
             }
         }
+        if self.machine_type is not None:
+            body["launchParameter"]["environment"]["machineType"] = self.machine_type
         LOGGER.info("Launching Dataflow job=%s query_uri=%s", job_name, query_uri)
         response = service.projects().locations().flexTemplates().launch(
             projectId=self.project_id, location=self.region, body=body
@@ -228,6 +235,7 @@ class DataflowExecutor:
             task_id=grape_id, dag=dag, sql=sql, db_type=db_type, connection_id=str(connection_id),
             driver_jars=str(driver_jars), password_secret=source.get("password_secret"),
             destination_type=destination_type, destination=destination,
+            machine_type=df.get("machine_type"),
             project_id=str(df["project_id"]), region=str(df["region"]),
             template_gcs_path=str(df["template_gcs_path"]), system_bucket=str(df["system_bucket"]),
             subnetwork=str(df["subnetwork"]), service_account_email=str(df["service_account_email"]),
