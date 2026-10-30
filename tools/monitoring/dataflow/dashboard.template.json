@@ -12,7 +12,7 @@
           "title": "How to interpret / 범위",
           "text": {
             "format": "MARKDOWN",
-            "content": "Project __PROJECT_ID__ / region __REGION__ / job __JOB_NAME__ / ID __JOB_ID__.\n**No data = unknown, not zero.** Choose the actual job time range; native metrics can lag up to several minutes.\nOracle cursor reads ≠ post-JDBC output ≠ BigQuery confirmed rows. No percent-complete or confirmed BQ row counter is available.\nCharts retain individual series and 60-second maxima; never sum cumulative gauge samples or PCollections.\n[Dataflow Job](https://console.cloud.google.com/dataflow/jobs/__REGION__/__JOB_ID__?project=__PROJECT_ID__)"
+            "content": "Project __PROJECT_ID__ / region __REGION__ / job __JOB_NAME__ / ID __JOB_ID__.\n**No data = unknown, not zero.** Choose the actual job time range; native metrics can lag up to several minutes.\nOracle cursor reads ≠ post-JDBC output ≠ BigQuery confirmed rows. No percent-complete or confirmed BQ row counter is available.\nNative filter charts retain individual series and 60-second maxima; ratio uses sampled PromQL observations. Never sum cumulative gauge samples or PCollections.\n[Dataflow Job](https://console.cloud.google.com/dataflow/jobs/__REGION__/__JOB_ID__?project=__PROJECT_ID__)"
           }
         }
       },
@@ -260,7 +260,7 @@
         "xPos": 0,
         "yPos": 19,
         "width": 12,
-        "height": 5,
+        "height": 4,
         "widget": {
           "title": "Composer stage snapshots / unknown / API observation errors",
           "logsPanel": {
@@ -273,9 +273,9 @@
       },
       {
         "xPos": 0,
-        "yPos": 24,
+        "yPos": 23,
         "width": 12,
-        "height": 5,
+        "height": 4,
         "widget": {
           "title": "Worker FILE_LOADS references (submitted load != success)",
           "logsPanel": {
@@ -288,9 +288,9 @@
       },
       {
         "xPos": 0,
-        "yPos": 29,
+        "yPos": 27,
         "width": 12,
-        "height": 5,
+        "height": 4,
         "widget": {
           "title": "Worker errors and OOM evidence (not automatic diagnosis)",
           "logsPanel": {
@@ -303,14 +303,140 @@
       },
       {
         "xPos": 0,
-        "yPos": 34,
+        "yPos": 31,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "Observed container memory ratio (%) - matched worker/container",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "prometheusQuery": "100 * ({\"dataflow.googleapis.com/worker/memory/bytes_used\",monitored_resource=\"dataflow_worker\",project_id=\"__PROJECT_ID__\",job_id=\"__JOB_ID__\",job_name=\"__JOB_NAME__\"} / on(project_id,location,job_name,job_id,worker_type,worker_id,container) ({\"dataflow.googleapis.com/worker/memory/container_limit\",monitored_resource=\"dataflow_worker\",project_id=\"__PROJECT_ID__\",job_id=\"__JOB_ID__\",job_name=\"__JOB_NAME__\"} > 0))"
+                },
+                "plotType": "LINE"
+              }
+            ],
+            "yAxis": {
+              "label": "Observed used / positive container limit (%)",
+              "scale": "LINEAR"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 6,
+        "yPos": 31,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "Worker total RAM limit (bytes; not used/GB-seconds)",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"dataflow.googleapis.com/worker/memory/total_limit\" AND resource.type=\"dataflow_worker\" AND resource.labels.project_id=\"__PROJECT_ID__\" AND resource.labels.job_id=\"__JOB_ID__\" AND resource.labels.job_name=\"__JOB_NAME__\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_MAX"
+                    }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${resource.labels.worker_type} / ${resource.labels.worker_id}"
+              }
+            ],
+            "yAxis": {
+              "label": "Worker RAM limit (bytes)",
+              "scale": "LINEAR"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 35,
+        "width": 12,
+        "height": 4,
+        "widget": {
+          "title": "OOM detector marker / exception candidates (not proven kernel kills)",
+          "logsPanel": {
+            "filter": "resource.type=\"dataflow_step\" AND resource.labels.job_id=\"__JOB_ID__\" AND (\"Successfully wrote OOM event\" OR \"OutOfMemoryError\" OR \"MemoryError\" OR \"OOMKilled\")",
+            "resourceNames": [
+              "projects/__PROJECT_ID__"
+            ]
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 39,
+        "width": 12,
+        "height": 4,
+        "widget": {
+          "title": "Java heap / GC pressure candidates (inspect full context)",
+          "logsPanel": {
+            "filter": "resource.type=\"dataflow_step\" AND resource.labels.job_id=\"__JOB_ID__\" AND (\"Java heap space\" OR \"GC overhead limit exceeded\" OR \"GC thrashing\" OR \"measured GC thrashing\")",
+            "resourceNames": [
+              "projects/__PROJECT_ID__"
+            ]
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 43,
+        "width": 12,
+        "height": 4,
+        "widget": {
+          "title": "cgroup / killed process candidates (job-scoped; not diagnosis)",
+          "logsPanel": {
+            "filter": "resource.type=\"dataflow_step\" AND resource.labels.job_id=\"__JOB_ID__\" AND (\"Memory cgroup out of memory\" OR \"oom-kill\" OR \"Killed process\" OR \"OOMKilled\")",
+            "resourceNames": [
+              "projects/__PROJECT_ID__"
+            ]
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 47,
+        "width": 12,
+        "height": 4,
+        "widget": {
+          "title": "SDK disconnect / worker loss candidates (may not be OOM)",
+          "logsPanel": {
+            "filter": "resource.type=\"dataflow_step\" AND resource.labels.job_id=\"__JOB_ID__\" AND (\"SDK harness disconnected\" OR \"SDK harness connection lost\" OR \"SDK harness is disconnected\" OR \"worker lost contact\" OR \"Worker lost contact\")",
+            "resourceNames": [
+              "projects/__PROJECT_ID__"
+            ]
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 51,
+        "width": 12,
+        "height": 3,
+        "widget": {
+          "title": "Kernel VM logs - worker correlation required",
+          "text": {
+            "format": "MARKDOWN",
+            "content": "Not queried by default. After verifying this Job owns a worker VM, render with --worker-instance-id, --worker-zone and --confirmed-worker-job-id. gce_instance has no job_id resource label. No project-wide killed-process search is performed. Missing kernel logs do not rule out OOM."
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 54,
         "width": 12,
         "height": 3,
         "widget": {
           "title": "Known limits / 다음 확인",
           "text": {
             "format": "MARKDOWN",
-            "content": "BQ confirmed row count is **unsupported** here: load references mean SUBMITTED_REFERENCE_OBSERVED/current_state unknown; copy SUCCESS_OUTPUT_OBSERVED is a completion-output observation, not a live API status query. Open the recorded BQ job ID for its actual status.\npost_jdbc_output_rows is in namespace jdbc_export_progress and only exists after deploying the progress image. metric_name export spelling may differ: the chart intentionally shows all SDK user counters; inspect labels before narrowing it. Zero downstream output does not prove Oracle has not read rows.\nContainer memory is native measured bytes, not total memory GB-seconds or an invented percent. Missing memory series means unavailable, not healthy.\nComposer logs require the executor progress code; worker logs/counter require the new image/template. No custom/log-based metric is created."
+            "content": "BQ confirmed row count is **unsupported** here: load references mean SUBMITTED_REFERENCE_OBSERVED/current_state unknown; copy SUCCESS_OUTPUT_OBSERVED is a completion-output observation, not a live API status query. Open the recorded BQ job ID for its actual status.\npost_jdbc_output_rows is in namespace jdbc_export_progress and only exists after deploying the progress image. metric_name export spelling may differ: the chart intentionally shows all SDK user counters; inspect labels before narrowing it. Zero downstream output does not prove Oracle has not read rows.\nContainer memory is native measured bytes, not total memory GB-seconds or an invented percent. Missing memory series means unavailable, not healthy.\nComposer logs require the executor progress code; worker logs/counter require the new image/template. No custom/log-based metric is created.\nOOM panels show matching log context, not a deduplicated OOM event count or automatic root cause; negated text and retries may match. Ratio joins the same worker/container, drops absent/nonpositive limits, and uses sampled observations (not real-time or exact peak). JVM heap/GC numeric, process RSS and cgroup event collection are not installed."
           }
         }
       }

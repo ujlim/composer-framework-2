@@ -16,7 +16,15 @@ PAGE_SIZE = 100
 MAX_BYTES = 131072
 MAX_LINE_BYTES = 8192
 MAX_RESPONSE_BYTES = 262144
-SOURCE_BYTES = MAX_BYTES // 2
+SOURCE_BYTES = MAX_BYTES // 3
+OOM_SIGNAL_FILTER = '(' + ' OR '.join(json.dumps(term) for term in (
+    'Successfully wrote OOM event', 'OutOfMemoryError', 'MemoryError', 'OOMKilled',
+    'Java heap space', 'GC overhead limit exceeded', 'GC thrashing',
+    'Memory cgroup out of memory', 'oom-kill', 'Killed process',
+    'SDK harness disconnected', 'SDK harness connection lost',
+    'SDK harness is disconnected', 'worker lost contact',
+)) + ')'
+
 
 
 def redact(value, secrets=()):
@@ -107,17 +115,20 @@ def collect_failure_diagnostics(*, logger, credentials, project_id, region, job_
             finally:
                 result.close()
 
-        # User-requested sections 7 and 8 only. Reserve output for JDBC results.
+        # Preserve sections 7/8 and reserve a bounded newest-first OOM signal excerpt.
         sources = (
-            ("7 ALL Job Logs (bounded)", ""),
-            ("8 JDBC QUERY RESULT", '(textPayload:"JDBC QUERY RESULT" OR jsonPayload.message:"JDBC QUERY RESULT")'),
+            ("7 ALL Job Logs (bounded)", "", "timestamp asc"),
+            ("8 JDBC QUERY RESULT", '(textPayload:"JDBC QUERY RESULT" OR jsonPayload.message:"JDBC QUERY RESULT")', "timestamp asc"),
+            ("9 OOM GC SDK signal candidates (not diagnoses or event counts)", OOM_SIGNAL_FILTER, "timestamp desc"),
         )
-        for source, extra_filter in sources:
+        for source, extra_filter, order_by in sources:
             token = None
             source_used = 0
-            source_deadline = min(deadline, monotonic() + MAX_SECONDS / 2)
+            source_deadline = min(deadline, monotonic() + MAX_SECONDS / len(sources))
             # Section 8 intentionally repeats result rows also present in section 7.
             seen.clear()
+            if extra_filter == OOM_SIGNAL_FILTER:
+                logger.warning("OOM/GC/SDK matches are context candidates, not unique OOM events. INFO detector markers, negated text and repeated attempts require investigation; no kernel cause is inferred.")
             entries_found = 0
             logger.warning("===== Dataflow [%s] =====", source)
             section_query = query + ("\n" + extra_filter if extra_filter else "")
@@ -126,7 +137,7 @@ def collect_failure_diagnostics(*, logger, credentials, project_id, region, job_
             try:
                 for _ in range(MAX_PAGES):
                     body = {"resourceNames": [f"projects/{project_id}"], "filter": section_query,
-                            "orderBy": "timestamp asc", "pageSize": PAGE_SIZE}
+                            "orderBy": order_by, "pageSize": PAGE_SIZE}
                     if token:
                         body["pageToken"] = token
                     data = request("POST", "https://logging.googleapis.com/v2/entries:list", json=body)

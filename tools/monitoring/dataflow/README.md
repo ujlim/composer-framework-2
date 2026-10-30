@@ -94,7 +94,8 @@ Job별 필터는 생성 시 고정되므로 다른 Job은 다시 렌더 후 새 
 | worker I/O logs | 실제 GCS파일/LOAD 제출/COPY 완료참조. LOAD 제출은 성공 아님. current_state는unknown. BQ 확정적재행수는 미지원 |
 | worker errors | 해당 dataflow_step Job ID의 ERROR/OOM 문구. 로그만으로 자동 원인 확정 안 함 |
 
-모든 chart는 GAUGE의 각 시리즈를 60초 구간 `ALIGN_MAX`로 표시하고 시리즈 간 합산하지 않습니다.
+native timeSeriesFilter chart는 GAUGE의 각 시리즈를 60초 구간 `ALIGN_MAX`로 표시하고 시리즈 간 합산하지 않습니다.
+메모리 비율 패널만 아래 설명의 PromQL로 동일 컨테이너 관측값을 나눕니다.
 해당 구간 최대 관측값이지 정확한 순간값이 아닙니다. 누적 gauge를 시간 SUM/RATE로 바꾸지 않았습니다.
 **데이터 없음 = unknown, 0/정상/성공 아님**. native 지표는 보통60초 sampling 후 최대420초 정도 지연될 수 있습니다.
 로그도 비동기이며 60초 이내 최신성이나 단계별 모든 이벤트 표시를 보장하지 않습니다.
@@ -122,3 +123,60 @@ Monitoring Metrics Explorer에서 실제 `metric.labels.metric_name`, ptransform
 - update/etag: https://docs.cloud.google.com/sdk/gcloud/reference/monitoring/dashboards/update
 - Logging resource: https://docs.cloud.google.com/logging/docs/api/v2/resource-list
 - 권한: https://docs.cloud.google.com/monitoring/access-control
+
+
+## OOM 보완 패널 (2026-10-30 수정)
+
+- `worker/memory/total_limit`: 워커 전체 RAM **한도**. container_limit·사용량과 구분합니다.
+- 관측 메모리 비율: `100 * bytes_used / (container_limit > 0)`를
+  `on(project_id,location,job_name,job_id,worker_type,worker_id,container)`로 일치시킵니다.
+  분모의 `> 0`은 bool 없이 양수인 실제 한도 값을 유지합니다. 분모0/음수/결측 또는 짝없는 시리즈는
+  결과가 없고 0%로 채우지 않습니다. `total_limit`으로 컨테이너 비율을 나누거나 워커간 평균을 내지 않습니다.
+  PromQL instant selector는 lookback 안의 직전 표본을 쓸 수 있어 동일 시각·실시간/순간peak 보장은 없습니다.
+  100% 초과 관측도 clamp하지 않으므로 시각 차이·지표 이상을 점검할 수 있습니다.
+- INFO `Successfully wrote OOM event`는 탐지기의 **기록 marker 후보**이며 kernel kill 확정이 아닙니다.
+- Java heap / GC overhead·thrashing, cgroup·Killed process, SDK disconnect를 별도 로그 패널로 구분합니다.
+  SDK disconnect·exit137만으로 OOM이라고 단정하지 마십시오. 부정문·반복 로그도 후보로 표시될 수 있어
+  자동 이벤트 수·장애 수·OOM 발생률을 만들지 않았습니다.
+- 80% 지속/90% 접근 같은 값은 검토를 시작할 **예시 운영 기준**일 뿐 OOM 판정값이 아닙니다.
+  실제 한도와 일시적 peak, workload baseline으로 조정해야 하며 경보 정책은 생성하지 않습니다.
+
+### 커널 로그: 확인한 worker VM에만 한정
+
+기본 템플릿은 GCE kernel 조회를 하지 않고 안내문만 표시합니다. Dataflow Job의 worker 이름을
+Compute Engine의 **해당 VM**과 대조하여 프로젝트/zone/숫자instance ID/Job 소유관계를 확인하세요.
+`gce_instance`에는 `job_id` resource label이 없습니다. 아래 옵션은 자동 검증이 아니라
+사용자가 확인한 상관관계를 입력하는 것입니다. 잘못된 VM을 넣으면 다른 VM의 로그를 보게 됩니다.
+
+```bash
+# 선택적 읽기 전용 조회: Dataflow Job에서 확인한 정확한 worker 이름과 zone 사용
+export WORKER_NAME='확인된-worker-vm-name'
+export WORKER_ZONE='asia-northeast3-a'
+gcloud compute instances describe "$WORKER_NAME" --zone="$WORKER_ZONE" --project="$PROJECT_ID" \
+  --format='json(id,name,zone,labels)'
+# 응답과 Dataflow worker 목록을 사람이 대조한 뒤 실제 numeric id만 입력
+export WORKER_INSTANCE_ID='확인된_숫자_ID'
+python tools/monitoring/dataflow/render_dashboard.py \
+  --project-id "$PROJECT_ID" --region "$REGION" --job-id "$JOB_ID" --job-name "$JOB_NAME" \
+  --worker-instance-id "$WORKER_INSTANCE_ID" --worker-zone "$WORKER_ZONE" \
+  --confirmed-worker-job-id "$JOB_ID" --output /tmp/dataflow-dashboard.json
+```
+
+이 경우에만 project+zone+instance_id로 엄격 제한한 `gce_instance` kernel 후보 패널이 생성됩니다.
+Dashboard 시간 범위를 해당 실패 실행으로 제한하세요. 한 VM 표본이며 전체워커 통합판정이 아닙니다.
+커널 로그가 기존 수집 설정으로 전송되지 않았다면 빈 결과입니다. 이 변경은 Ops Agent 설치나
+새 로그수집/권한 설정을 하지 않습니다. 전체 프로젝트의 Killed process를 무제한 검색하지 않습니다.
+
+### 아직 직접 계측하지 않는 항목
+
+JVM heap 사용량/GC pause 수치, 프로세스 RSS/peak, cgroup memory.events·oom_kill 카운터는
+새 에이전트/런타임 계측 없이 자동 수집한다고 주장하지 않습니다. 기존 로그 후보만 조회합니다.
+분자·분모 관측값/Job·worker·stage 진행/실제 예외·커널 원문을 같은 시각에 대조한 뒤 원인을 판단하세요.
+이 수정은 대시보드 JSON과 Composer 실패진단 코드 변경입니다. 기존 진행 launcher가 이미 배포됐다면
+이번 OOM 수정만을 위해 이미지 재빌드할 필요는 없으나 미배포인 기존 진행계측에는 여전히 새 이미지가 필요합니다.
+
+PromQL 공식 근거:
+- https://docs.cloud.google.com/monitoring/promql#querying_cloud_monitoring_metrics_by_using_promql
+- https://prometheus.io/docs/prometheus/latest/querying/operators/
+- https://prometheus.io/docs/prometheus/latest/querying/basics/#staleness
+- https://docs.cloud.google.com/dataflow/docs/guides/troubleshoot-oom

@@ -11,9 +11,27 @@ DEFAULT_TEMPLATE = Path(__file__).with_name('dashboard.template.json')
 METRICS = {
     'job/current_num_vcpus', 'job/is_failed', 'job/element_count',
     'job/estimated_byte_count', 'job/user_counter', 'job/total_shuffle_data_processed',
-    'worker/memory/bytes_used', 'worker/memory/container_limit',
+    'worker/memory/bytes_used', 'worker/memory/container_limit', 'worker/memory/total_limit',
 }
 PLACEHOLDER = re.compile(r'__[A-Z][A-Z0-9_]*__')
+
+
+MEMORY_MATCH_LABELS = 'project_id,location,job_name,job_id,worker_type,worker_id,container'
+
+
+def memory_ratio_query(project_id, job_id, job_name):
+    labels = ('monitored_resource="dataflow_worker",project_id="' + project_id
+              + '",job_id="' + job_id + '",job_name="' + job_name + '"')
+    used = '{"dataflow.googleapis.com/worker/memory/bytes_used",' + labels + '}'
+    limit = '{"dataflow.googleapis.com/worker/memory/container_limit",' + labels + '}'
+    return '100 * (' + used + ' / on(' + MEMORY_MATCH_LABELS + ') (' + limit + ' > 0))'
+
+
+def validate_memory_ratio(query):
+    # Accept only the reviewed same-container ratio, not arbitrary PromQL.
+    match = re.search(r'project_id="([a-z][a-z0-9-]+)",job_id="([A-Za-z0-9_-]+)",job_name="([a-z][a-z0-9-]*)"', query)
+    if not match or query != memory_ratio_query(*match.groups()):
+        raise ValueError('memory ratio must match identical worker/container labels and positive denominator')
 
 
 def validate(document):
@@ -53,11 +71,23 @@ def validate(document):
             panel = widget['logsPanel']
             if not panel.get('filter') or not panel.get('resourceNames'):
                 raise ValueError('logs must have a filter and project scope')
+            if 'resource.type="gce_instance"' in panel['filter']:
+                required = [r'resource.labels.project_id="[a-z][a-z0-9-]+"',
+                            r'resource.labels.instance_id="[0-9]+"',
+                            r'resource.labels.zone="[a-z]+-[a-z]+[0-9]+-[a-z]"']
+                if any(not re.search(token, panel['filter']) for token in required):
+                    raise ValueError('kernel logs must be scoped to an explicitly verified VM')
             if any(not re.fullmatch(r'projects/[a-z][a-z0-9-]{4,28}[a-z0-9]', name) for name in panel['resourceNames']):
                 raise ValueError('invalid logging project scope')
         else:
             for dataset in widget['xyChart'].get('dataSets', []):
-                series = dataset.get('timeSeriesQuery', {}).get('timeSeriesFilter', {})
+                query = dataset.get('timeSeriesQuery', {})
+                if 'prometheusQuery' in query:
+                    if set(query) != {'prometheusQuery'}:
+                        raise ValueError('mixed PromQL/filter query')
+                    validate_memory_ratio(query['prometheusQuery'])
+                    continue
+                series = query.get('timeSeriesFilter', {})
                 filter_ = series.get('filter', '')
                 match = re.search(r'metric.type="dataflow.googleapis.com/([^"]+)"', filter_)
                 if not match or match.group(1) not in METRICS:
@@ -83,7 +113,8 @@ def validate(document):
 
 
 def render(*, project_id, region, job_id, job_name, template=DEFAULT_TEMPLATE,
-           existing_dashboard=None, project_number=None):
+           existing_dashboard=None, project_number=None, worker_instance_id=None,
+           worker_zone=None, confirmed_worker_job_id=None):
     patterns = {'PROJECT_ID':r'[a-z][a-z0-9-]{4,28}[a-z0-9]',
                 'REGION':r'[a-z]+-[a-z]+[0-9]+',
                 'JOB_ID':r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}',
@@ -102,6 +133,21 @@ def render(*, project_id, region, job_id, job_name, template=DEFAULT_TEMPLATE,
         if isinstance(value,dict): return {k:replace(v) for k,v in value.items()}
         return value
     document=replace(document)
+    if any(v is not None for v in (worker_instance_id, worker_zone, confirmed_worker_job_id)):
+        if (not re.fullmatch(r'[0-9]+', worker_instance_id or '')
+            or not re.fullmatch(r'[a-z]+-[a-z]+[0-9]+-[a-z]', worker_zone or '')
+            or confirmed_worker_job_id != job_id):
+            raise ValueError('kernel logs require verified numeric worker instance ID, zone and matching confirmed job ID')
+        widget = next(t['widget'] for t in document['mosaicLayout']['tiles']
+                      if t['widget']['title'] == 'Kernel VM logs - worker correlation required')
+        widget.pop('text')
+        widget['title'] = 'Kernel VM candidates - explicitly correlated instance ' + worker_instance_id
+        widget['logsPanel'] = dict(
+            resourceNames=['projects/' + project_id],
+            filter='resource.type="gce_instance" AND resource.labels.project_id="' + project_id
+                + '" AND resource.labels.instance_id="' + worker_instance_id
+                + '" AND resource.labels.zone="' + worker_zone
+                + '" AND ("Out of memory" OR "oom-kill" OR "Killed process" OR "Memory cgroup out of memory")')
     if existing_dashboard is not None:
         existing=json.loads(Path(existing_dashboard).read_text(encoding='utf-8'))
         name,etag=existing.get('name'),existing.get('etag')
@@ -127,6 +173,9 @@ def main(argv=None):
     parser.add_argument('--template',type=Path,default=DEFAULT_TEMPLATE)
     parser.add_argument('--output',type=Path)
     parser.add_argument('--existing-dashboard',type=Path)
+    parser.add_argument('--worker-instance-id', help='numeric VM ID, after verifying it belongs to the chosen Job')
+    parser.add_argument('--worker-zone')
+    parser.add_argument('--confirmed-worker-job-id', help='must equal --job-id; user-confirmed correlation, not auto-discovery')
     parser.add_argument('--check',type=Path,help='validate an already rendered JSON locally only')
     args=parser.parse_args(argv)
     try:
@@ -138,7 +187,9 @@ def main(argv=None):
             parser.error('--job-id, --job-name and --output are required for rendering')
         document=render(project_id=args.project_id,region=args.region,job_id=args.job_id,
                         job_name=args.job_name,template=args.template,
-                        existing_dashboard=args.existing_dashboard,project_number=args.project_number)
+                        existing_dashboard=args.existing_dashboard,project_number=args.project_number,
+                        worker_instance_id=args.worker_instance_id,worker_zone=args.worker_zone,
+                        confirmed_worker_job_id=args.confirmed_worker_job_id)
         args.output.write_text(json.dumps(document,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
         print('Rendered locally: '+str(args.output)+' (no GCP changes)')
     except (ValueError,OSError) as exc:

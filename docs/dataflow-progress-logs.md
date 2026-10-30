@@ -96,3 +96,12 @@ Dataflow API의 운영 metric 제공 여부, OOM 재현·해결, 이미지빌드
 - https://docs.cloud.google.com/monitoring/api/metrics_gcp_d_h#dataflow
 - https://github.com/apache/beam/blob/v2.75.0/sdks/python/apache_beam/runners/dataflow/dataflow_metrics.py
 - https://github.com/apache/beam/blob/v2.75.0/sdks/python/apache_beam/io/gcp/bigquery_file_loads.py
+
+
+## OOM 확인 보완
+
+실패 시 기존 진단의 [9] OOM/GC/SDK 후보 최신순 조회가 추가됐습니다. INFO marker도 포함하되
+고유 OOM 수/커널원인 확정은 하지 않습니다. 대시보드의 워커전체RAM 한도·동일컨테이너 관측비율과
+오류유형별 후보 패널, 확인된 GCE worker VM의 선택적 커널 조회는
+`tools/monitoring/dataflow/README.md`를 참조하십시오. Composer 스냅샷의 memory_usage는 여전히
+unknown이며 Cloud Monitoring 메모리를 별도로 확인합니다. 신규 agent/JVM/RSS/cgroup 계측은 없습니다.

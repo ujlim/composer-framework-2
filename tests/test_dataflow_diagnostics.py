@@ -32,7 +32,7 @@ class DiagnosticsTest(unittest.TestCase):
     def call(self, responses=(), **kwargs):
         logger = Mock()
         session = Mock()
-        session.request.side_effect = [r if isinstance(r, Exception) else Response(r) for r in responses]
+        session.request.side_effect = [r if isinstance(r, Exception) else Response(r) for r in list(responses) + [{}, {}]]
         values = dict(logger=logger, credentials=object(), project_id='project', region='region',
                       job_id='job123', job_name='job-name', launch_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
                       now=datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc),
@@ -45,12 +45,26 @@ class DiagnosticsTest(unittest.TestCase):
     def test_messages_and_info_container_logs(self):
         s, text = self.call([{'entries': [{'severity': 'INFO', 'textPayload': 'root cause', 'logName': 'launcher'}]}, {'entries': []}])
         self.assertIn('root cause', text)
-        self.assertEqual(s.request.call_count, 2)
+        self.assertEqual(s.request.call_count, 3)
         body = s.request.call_args_list[0].kwargs['json']
         self.assertIn('resource.labels.job_id="job123"', body['filter'])
         self.assertNotIn('severity', body['filter'])
         self.assertEqual(body['orderBy'], 'timestamp asc')
         s.close.assert_called_once()
+
+    def test_info_oom_candidates_newest_first_without_diagnosis(self):
+        marker = {'severity': 'INFO', 'textPayload': 'Successfully wrote OOM event; not a kernel OOM confirmation'}
+        s,text=self.call([{}, {}, {'entries':[marker, marker]}])
+        query=s.request.call_args_list[2].kwargs['json']
+        self.assertEqual(query['orderBy'],'timestamp desc')
+        self.assertIn('Successfully wrote OOM event',query['filter'])
+        self.assertIn('GC overhead limit exceeded',query['filter'])
+        self.assertIn('resource.labels.job_id="job123"',query['filter'])
+        self.assertNotIn('severity',query['filter'])
+        self.assertNotIn('gce_instance',query['filter'])
+        self.assertIn('not unique OOM events',text)
+        self.assertIn('not a kernel OOM confirmation',text)
+        self.assertNotIn('oom_event_count',text)
 
     def test_no_id_does_not_fetch(self):
         s, text = self.call(job_id=None)
@@ -65,13 +79,13 @@ class DiagnosticsTest(unittest.TestCase):
 
     def test_no_wait_or_retries_when_logs_delayed(self):
         s, text = self.call([{}, {}])
-        self.assertEqual(s.request.call_count, 2)
+        self.assertEqual(s.request.call_count, 3)
         self.assertIn('delayed', text)
 
     def test_pages_bounded_and_deduplicated(self):
         page = {'entries': [{'textPayload': 'duplicate'}], 'nextPageToken': 'again'}
         s, text = self.call([page, page, {'entries': []},])
-        self.assertEqual(s.request.call_count, 3)
+        self.assertEqual(s.request.call_count, 4)
         self.assertEqual(text.count('duplicate'), 1)
         self.assertEqual(s.request.call_args_list[1].kwargs['json']['pageToken'], 'again')
 
