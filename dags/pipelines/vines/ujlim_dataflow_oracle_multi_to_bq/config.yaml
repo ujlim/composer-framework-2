@@ -1,0 +1,65 @@
+# Author: 임의진 (LIM UI JIN)
+# Created: 2026-10-28
+# Updated: 2026-10-31
+version: 1
+vine:
+  vine_id: ujlim_dataflow_oracle_multi_to_bq
+  description: Three Oracle source tables in ONE Dataflow job (staging-only example)
+  owner: framework-test
+  schedule: null
+  timezone: Asia/Seoul
+  start_date: "2026-01-01"
+  max_active_runs: 1
+  dagrun_timeout_seconds: 21600
+  tags: [sample, dataflow, oracle, multi-table]
+business_date:
+  type: daily
+runtime:
+  gcp_conn_id: google_cloud_default
+  dataflow:
+    project_id: gcp-prod-edp-sa-udw
+    region: asia-northeast3
+    system_bucket: bucket-prod-sa-udw-dataflow-system-1
+    # NEW template path: do not replace the existing single-table template.
+    template_gcs_path: gs://bucket-prod-sa-udw-dataflow-system-1/templates/jdbc-export-progress/20261031-multi-v1.json
+    subnetwork: https://www.googleapis.com/compute/v1/projects/REPLACE_WITH_SHARED_VPC_HOST_PROJECT/regions/asia-northeast3/subnetworks/subnet-prod-hub-int-sa-ubi-dataflow-1
+    service_account_email: sa-prod-sa-udw-dataflow-worker@gcp-prod-edp-sa-udw.iam.gserviceaccount.com
+grape_defaults:
+  # Avoid an automatic whole-job relaunch following a partial write in this example.
+  retries: 0
+  retry_delay_seconds: 60
+  execution_timeout_seconds: 21600
+  poll_interval_seconds: 30
+  pool: default_pool
+  priority_weight: 1
+grapes:
+  - grape_id: export_three_oracle_tables
+    type: jdbc_tables_to_bigquery
+    source:
+      db_type: oracle
+      connection_id: conn-dataflow-oracle
+      driver_jars: gs://bucket-prod-sa-udw-dataflow-system-1/drivers/oracle/ojdbc11.jar
+      # Same credential flow as before: Airflow Connection extra.password_secret.
+      # Never put a password into this YAML, SQL, schema or manifest.
+    tables:
+      - id: emp
+        sql_file: sql/emp.sql
+        destination:
+          table: "gcp-prod-edp-sa-udw:REPLACE_WITH_STAGE_DATASET.emp_stage"
+          schema_file: schema/emp.json
+          write_disposition: WRITE_TRUNCATE
+          create_disposition: CREATE_IF_NEEDED
+      - id: dept
+        sql_file: sql/dept.sql
+        destination:
+          table: "gcp-prod-edp-sa-udw:REPLACE_WITH_STAGE_DATASET.dept_stage"
+          schema_file: schema/dept.json
+          write_disposition: WRITE_TRUNCATE
+          create_disposition: CREATE_IF_NEEDED
+      - id: sales
+        sql_file: sql/sales.sql
+        destination:
+          table: "gcp-prod-edp-sa-udw:REPLACE_WITH_STAGE_DATASET.sales_stage"
+          schema_file: schema/sales.json
+          write_disposition: WRITE_TRUNCATE
+          create_disposition: CREATE_IF_NEEDED

@@ -1,6 +1,6 @@
 # Author: 임의진 (LIM UI JIN)
 # Created: 2026-10-30
-# Updated: 2026-10-30
+# Updated: 2026-10-31
 """Bounded, fail-open Dataflow observations, never a source-row-count estimator."""
 from __future__ import annotations
 
@@ -140,13 +140,18 @@ class ProgressReporter:
         state = fields.get('job_state') or fields.get('state') or snapshot.get('job_state') or 'unknown'
         labels = {'job_started':'시작', 'snapshot':'진행', 'final_snapshot':'최종 관측',
                   'job_state_changed':'상태 변경', 'observer_unavailable':'관측 오류',
-                  'job_state_unavailable':'상태 조회 오류'}
+                  'job_state_unavailable':'상태 조회 오류', 'table_configured':'테이블 설정'}
         parts = [f"[{labels.get(event, '안내')}] Job={short(self.job_id,128)} 작업={short(self.identity['task_id'],60)}",
                  '상태=' + state_names.get(state, short(state,60))]
         if event == 'job_started':
             parts += ['머신=' + short(fields.get('machine_type_configured', '서비스 기본값')).replace('<service-default>', '서비스 기본값'),
                       '적재방식=' + short(fields.get('write_method', '미확인')),
                       '원천읽기/BQ확정적재=미확인(후단 0도 미읽음을 뜻하지 않음)']
+        elif event == 'table_configured':
+            parts += ['테이블=' + short(fields.get('table_id', '미확인'), 64),
+                      '목적지=' + short(fields.get('destination', '미확인'), 160),
+                      '쓰기=' + short(fields.get('write_disposition', '미확인'), 32),
+                      '설정 확인만 완료; 원천읽기/BQ확정적재=미확인']
         elif event in {'observer_unavailable', 'job_state_unavailable'}:
             parts += ['조회 실패=' + short(fields.get('error_type', '미확인')),
                       '실제 작업 실패 여부는 별도 확인; 자동 재시도로 단정하지 않음']

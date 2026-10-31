@@ -1,3 +1,6 @@
+# Author: 임의진 (LIM UI JIN)
+# Updated: 2026-10-31
+
 import argparse
 import csv
 import io
@@ -112,10 +115,17 @@ def _emit_progress(event):
 
 class ObservePostJdbcRows(beam.DoFn):
     """Count rows AFTER Java ReadFromJdbc output; NOT Oracle cursor reads."""
-    def __init__(self):
+    def __init__(self, table_id=None):
+        # Only manifest-validated identifiers enter metric names; reject unsafe
+        # caller-supplied names rather than embedding SQL/credentials in metrics.
+        if table_id is not None and (
+                not isinstance(table_id, str) or not 1 <= len(table_id) <= 63
+                or table_id[0] not in "abcdefghijklmnopqrstuvwxyz"
+                or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789_" for c in table_id)):
+            raise ValueError("Invalid progress table id")
+        namespace = "jdbc_export_progress" + ("." + table_id if table_id else "")
         try:
-            self._counter = Metrics.counter(
-                "jdbc_export_progress", "post_jdbc_output_rows")
+            self._counter = Metrics.counter(namespace, "post_jdbc_output_rows")
         except Exception:
             self._counter = None
 
@@ -134,8 +144,9 @@ class ObserveFileLoadOutput(beam.DoFn):
     Throttling is per DoFn instance, not a global log rate. Worker restart or
     bundle replay may repeat events. Samples are not an inventory or row count.
     """
-    def __init__(self, kind, job_name="unknown", interval_seconds=60):
+    def __init__(self, kind, job_name="unknown", interval_seconds=60, table_id=None):
         self.kind = kind
+        self.table_id = _progress_identifier(table_id) if table_id is not None else None
         self.job_name = _progress_identifier(job_name)
         self.interval_seconds = interval_seconds
         self._last_logged = None
@@ -154,6 +165,8 @@ class ObserveFileLoadOutput(beam.DoFn):
                 source="Beam 2.75.0 WriteResult FILE_LOADS output",
                 sample_only=True, suppressed_since_previous=self._suppressed,
             )
+            if self.table_id is not None:
+                event["table_id"] = self.table_id
             if self.kind == "gcs_temp_file_observed":
                 uri, size = observed
                 # The output is emitted after a file writer closes. This does
@@ -204,16 +217,33 @@ def run():
     parser.add_argument("--username", required=True)
     parser.add_argument("--password_secret", required=True)
     parser.add_argument("--driver_jars", required=True)
-    parser.add_argument("--query_uri", required=True)
-    parser.add_argument("--destination_type", required=True, choices=["gcs", "bigquery"])
+    parser.add_argument("--query_uri")
+    parser.add_argument("--tables_manifest_uri")
+    parser.add_argument("--destination_type", choices=["gcs", "bigquery"])
     parser.add_argument("--output_path")
-    parser.add_argument("--output_format", default="json", choices=["json", "csv", "parquet"])
+    parser.add_argument("--output_format", choices=["json", "csv", "parquet"])
     parser.add_argument("--parquet_schema")
     parser.add_argument("--output_table")
     parser.add_argument("--bq_schema")
-    parser.add_argument("--write_disposition", default="WRITE_APPEND")
-    parser.add_argument("--create_disposition", default="CREATE_IF_NEEDED")
+    parser.add_argument("--write_disposition")
+    parser.add_argument("--create_disposition")
     args, pipeline_args = parser.parse_known_args()
+
+    tables = None
+    if args.tables_manifest_uri:
+        # Launcher-only graph preflight; do not capture a local helper in save_main_session.
+        from multi_table import load_tables
+        if any(value is not None for value in (
+                args.query_uri, args.destination_type, args.output_path,
+                args.output_format, args.output_table, args.bq_schema,
+                args.parquet_schema, args.write_disposition, args.create_disposition)):
+            raise ValueError("tables_manifest_uri cannot be combined with single-table parameters")
+        tables = load_tables(args.tables_manifest_uri, read_gcs_text)
+    elif not args.query_uri or not args.destination_type:
+        raise ValueError("query_uri and destination_type are required in single-table mode")
+    args.output_format = args.output_format or "json"
+    args.write_disposition = args.write_disposition or "WRITE_APPEND"
+    args.create_disposition = args.create_disposition or "CREATE_IF_NEEDED"
 
     credentials, adc_project_id = google.auth.default()
     logging.info(
@@ -224,9 +254,12 @@ def run():
     )
     logging.info("Accessing password secret: %s", args.password_secret)
 
-    query = read_gcs_text(args.query_uri)
+    query = read_gcs_text(args.query_uri) if tables is None else None
     password = access_secret(args.password_secret)
-    logging.info("JDBC export db_type=%s query_uri=%s destination=%s", args.db_type, args.query_uri, args.destination_type)
+    if tables is None:
+        logging.info("JDBC export db_type=%s query_uri=%s destination=%s", args.db_type, args.query_uri, args.destination_type)
+    else:
+        logging.info("JDBC multi-table export db_type=%s table_count=%s destination=bigquery", args.db_type, len(tables))
 
     options = PipelineOptions(pipeline_args, save_main_session=True)
     progress_job_name = "unknown"
@@ -238,13 +271,52 @@ def run():
             "job_name": progress_job_name,
             "configured_temp_location": _progress_identifier(cloud_options.temp_location),
             "file_loads_location_note": "Configured base only; actual file URI logged from WriteResult",
-            "row_counter": "jdbc_export_progress.post_jdbc_output_rows",
+            "row_counter": ("jdbc_export_progress.post_jdbc_output_rows" if tables is None else
+                            ["jdbc_export_progress." + table["id"] + ".post_jdbc_output_rows" for table in tables]),
             "counter_scope": "AFTER Java ReadFromJdbc; not Oracle cursor reads or committed BQ rows",
             "zero_counter_note": "Unknown upstream progress: default JDBC reparallelization may delay output",
         })
     except Exception:
         pass
     with beam.Pipeline(options=options) as pipeline:
+        if tables is not None:
+            for table in tables:
+                label = table["id"]
+                destination = table["destination"]
+                rows = (
+                    pipeline
+                    | f"{label}/Read JDBC" >> ReadFromJdbc(
+                        table_name="jdbc_export_" + label,
+                        query=table["query"],
+                        driver_class_name=DRIVER_CLASS[args.db_type],
+                        jdbc_url=args.connection_url,
+                        username=args.username,
+                        password=password,
+                        driver_jars=args.driver_jars,
+                    )
+                    | f"{label}/Observe Post JDBC Output" >> beam.ParDo(ObservePostJdbcRows(label))
+                )
+                write_result = (
+                    rows
+                    | f"{label}/To BigQuery Dict" >> beam.Map(row_dict)
+                    | f"{label}/Write BigQuery" >> WriteToBigQuery(
+                        table=destination["table"],
+                        schema=table["schema"],
+                        write_disposition=destination.get("write_disposition", "WRITE_APPEND"),
+                        create_disposition=destination.get("create_disposition", "CREATE_IF_NEEDED"),
+                        method=WriteToBigQuery.Method.FILE_LOADS,
+                    )
+                )
+                _ = (write_result.destination_file_pairs
+                     | f"{label}/Observe GCS Load Files" >> beam.ParDo(ObserveFileLoadOutput(
+                         "gcs_temp_file_observed", progress_job_name, table_id=label)))
+                _ = (write_result.destination_load_jobid_pairs
+                     | f"{label}/Observe BQ Load References" >> beam.ParDo(ObserveFileLoadOutput(
+                         "bq_load_reference_observed", progress_job_name, table_id=label)))
+                _ = (write_result.destination_copy_jobid_pairs
+                     | f"{label}/Observe BQ Copy Completions" >> beam.ParDo(ObserveFileLoadOutput(
+                         "bq_copy_completion_observed", progress_job_name, table_id=label)))
+            return
         rows = pipeline | "Read JDBC" >> ReadFromJdbc(
             table_name="jdbc_export",
             query=query,

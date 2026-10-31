@@ -1,5 +1,6 @@
 # Author: LIM UI JIN
 # Created: 2026-09-09
+# Updated: 2026-10-31 by 임의진 (LIM UI JIN)
 
 from __future__ import annotations
 
@@ -111,7 +112,7 @@ class VineFactory:
                 )
             elif grape_type in {"gcs_copy_object", "gcs_delete_object", "gcs_move_prefix", "gcs_merge_csv"}:
                 task = GCSExecutor.create_task(dag=dag, grape=grape, runtime=runtime, defaults=defaults)
-            elif grape_type in {"jdbc_to_gcs", "jdbc_to_bigquery"}:
+            elif grape_type in {"jdbc_to_gcs", "jdbc_to_bigquery", "jdbc_tables_to_bigquery"}:
                 task = DataflowExecutor.create_task(
                     dag=dag,
                     vine_config=self.config,

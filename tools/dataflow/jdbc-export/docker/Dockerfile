@@ -1,3 +1,5 @@
+# Author: 임의진 (LIM UI JIN)
+# Updated: 2026-10-31
 FROM gcr.io/dataflow-templates-base/python3-template-launcher-base
 WORKDIR /template
 
@@ -9,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jre-
 COPY requirements.txt /template/requirements.txt
 RUN pip install --no-cache-dir -r /template/requirements.txt
 
-COPY main.py /template/main.py
+COPY main.py multi_table.py /template/
 
 ENV FLEX_TEMPLATE_PYTHON_PY_FILE="/template/main.py"
 

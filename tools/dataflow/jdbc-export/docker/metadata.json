@@ -1,6 +1,6 @@
 {
   "name": "UBIS JDBC Export",
-  "description": "Reads DB2, Oracle, or Vertica by JDBC and writes to GCS or BigQuery.",
+  "description": "Reads DB2, Oracle, or Vertica by JDBC and writes to GCS or BigQuery. Optional version 1 multi-table manifest: one shared connection, one Beam pipeline. Author: 임의진 (LIM UI JIN); updated 2026-10-31.",
   "streaming": false,
   "parameters": [
     {
@@ -34,7 +34,8 @@
     {
       "name": "query_uri",
       "label": "Rendered SQL GCS URI",
-      "helpText": "GCS URI of the business-date rendered SQL file."
+      "helpText": "GCS URI of the business-date rendered SQL file. Required in single-table mode; omit with tables_manifest_uri.",
+      "isOptional": true
     },
     {
       "name": "destination_type",
@@ -42,7 +43,8 @@
       "regexes": [
         "^(gcs|bigquery)$"
       ],
-      "helpText": "Output destination: gcs or bigquery."
+      "helpText": "Output destination: gcs or bigquery. Required in single-table mode; omit with tables_manifest_uri.",
+      "isOptional": true
     },
     {
       "name": "output_path",
@@ -88,6 +90,12 @@
       "label": "BigQuery Create Disposition",
       "isOptional": true,
       "helpText": "BigQuery create disposition, for example CREATE_IF_NEEDED."
+    },
+    {
+      "name": "tables_manifest_uri",
+      "label": "Multi-table Manifest GCS URI",
+      "isOptional": true,
+      "helpText": "Version 1 manifest of rendered queries, schemas, and BigQuery destinations. Mutually exclusive with single-table parameters."
     }
   ]
 }

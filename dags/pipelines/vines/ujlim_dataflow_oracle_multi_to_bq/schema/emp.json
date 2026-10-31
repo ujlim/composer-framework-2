@@ -1,0 +1,28 @@
+{
+  "fields": [
+    {
+      "name": "emp_id",
+      "type": "STRING",
+      "mode": "NULLABLE",
+      "description": "Author: 임의진 (LIM UI JIN); Created: 2026-10-28; Updated: 2026-10-31"
+    },
+    {
+      "name": "emp_name",
+      "type": "STRING",
+      "mode": "NULLABLE",
+      "description": "Author: 임의진 (LIM UI JIN); Created: 2026-10-28; Updated: 2026-10-31"
+    },
+    {
+      "name": "hired_at",
+      "type": "DATETIME",
+      "mode": "NULLABLE",
+      "description": "Author: 임의진 (LIM UI JIN); Created: 2026-10-28; Updated: 2026-10-31"
+    },
+    {
+      "name": "business_date",
+      "type": "DATE",
+      "mode": "NULLABLE",
+      "description": "Author: 임의진 (LIM UI JIN); Created: 2026-10-28; Updated: 2026-10-31"
+    }
+  ]
+}

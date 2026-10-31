@@ -1,0 +1,28 @@
+{
+  "fields": [
+    {
+      "name": "sale_id",
+      "type": "STRING",
+      "mode": "NULLABLE",
+      "description": "Author: 임의진 (LIM UI JIN); Created: 2026-10-28; Updated: 2026-10-31"
+    },
+    {
+      "name": "sale_amount",
+      "type": "NUMERIC",
+      "mode": "NULLABLE",
+      "description": "Author: 임의진 (LIM UI JIN); Created: 2026-10-28; Updated: 2026-10-31"
+    },
+    {
+      "name": "sold_at",
+      "type": "TIMESTAMP",
+      "mode": "NULLABLE",
+      "description": "Author: 임의진 (LIM UI JIN); Created: 2026-10-28; Updated: 2026-10-31"
+    },
+    {
+      "name": "business_date",
+      "type": "DATE",
+      "mode": "NULLABLE",
+      "description": "Author: 임의진 (LIM UI JIN); Created: 2026-10-28; Updated: 2026-10-31"
+    }
+  ]
+}
