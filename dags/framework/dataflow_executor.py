@@ -1,5 +1,6 @@
-# Author: LIM UI JIN
+# Author: 임의진 (LIM UI JIN)
 # Created: 2026-09-30
+# Updated: 2026-10-30
 
 from __future__ import annotations
 
@@ -7,12 +8,15 @@ import json
 import logging
 import re
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from airflow.hooks.base import BaseHook
 from airflow.models import BaseOperator
 from airflow.providers.google.cloud.hooks.gcs import GCSHook
+
+from framework.dataflow_diagnostics import collect_failure_diagnostics, redact
+from framework.dataflow_progress import ProgressReporter, validate_progress_interval
 
 from framework.logger import task_failure_callback, task_success_callback
 from framework.models import LoadedConfig
@@ -58,13 +62,18 @@ class DataflowJdbcOperator(BaseOperator):
                  destination_type, destination, project_id, region, template_gcs_path,
                  system_bucket, subnetwork, service_account_email, staging_location=None,
                  temp_location=None, gcp_conn_id="google_cloud_default", impersonation_chain=None,
-                 poll_interval_seconds=30, job_name_prefix="jdbc-export", machine_type=None, **kwargs):
+                 poll_interval_seconds=30, job_name_prefix="jdbc-export",
+                 progress_log_interval_seconds=60, progress_log_details=False, machine_type=None, **kwargs):
         super().__init__(**kwargs)
         if machine_type is not None:
             if not isinstance(machine_type, str) or not machine_type.strip():
                 raise ValueError("runtime.dataflow.machine_type must be a non-empty string")
             machine_type = machine_type.strip()
+        if type(progress_log_details) is not bool:
+            raise ValueError("options.progress_log_details must be a boolean")
+        self.progress_log_details = progress_log_details
         self.machine_type = machine_type
+        self.progress_log_interval_seconds = validate_progress_interval(progress_log_interval_seconds)
         self.sql = sql
         self.db_type = db_type
         self.connection_id = connection_id
@@ -134,7 +143,11 @@ class DataflowJdbcOperator(BaseOperator):
 
         from googleapiclient.discovery import build
 
-        service = build("dataflow", "v1b3", cache_discovery=False)
+        import google.auth
+
+        # Preserve the existing launch/poll ADC identity; diagnostics use that same identity.
+        credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        service = build("dataflow", "v1b3", credentials=credentials, cache_discovery=False)
         suffix = context["ts_nodash"].lower().replace("t", "-")
         job_name = _safe_job_name(f"{self.job_name_prefix}-{self.db_type}-{suffix}")
         body = {
@@ -154,22 +167,86 @@ class DataflowJdbcOperator(BaseOperator):
         if self.machine_type is not None:
             body["launchParameter"]["environment"]["machineType"] = self.machine_type
         LOGGER.info("Launching Dataflow job=%s query_uri=%s", job_name, query_uri)
-        response = service.projects().locations().flexTemplates().launch(
-            projectId=self.project_id, location=self.region, body=body
-        ).execute()
+        launch_time = datetime.now(timezone.utc)
+        job_id = None
+
+        # Build the redaction set without letting optional secret lookup mask a failure.
+        diagnostic_secrets = [conn.login, parameters["connection_url"], self.sql]
+        try:
+            diagnostic_secrets.append(conn.password)
+        except Exception:
+            pass
+
+        def diagnose():
+            try:
+                collect_failure_diagnostics(
+                    logger=self.log, credentials=credentials, project_id=self.project_id,
+                    region=self.region, job_id=job_id, job_name=job_name,
+                    launch_time=launch_time, secrets=diagnostic_secrets,
+                )
+            except Exception as exc:
+                self.log.warning("Failure diagnostics could not run (%s); original failure preserved.", type(exc).__name__)
+
+        try:
+            response = service.projects().locations().flexTemplates().launch(
+                projectId=self.project_id, location=self.region, body=body
+            ).execute()
+        except Exception as exc:
+            diagnose()
+            # HttpError.__str__ can include the complete HTTP response and URI.
+            # Retain the actionable error message/status, not the raw payload.
+            reason = str(exc)
+            if hasattr(exc, "content"):
+                try:
+                    reason = json.loads(exc.content).get("error", {}).get("message", "API request failed")
+                except Exception:
+                    reason = "API request failed; inspect Dataflow launch logs"
+            status = getattr(getattr(exc, "resp", None), "status", "unknown")
+            safe_reason = redact(reason, diagnostic_secrets)[:2000]
+            raise RuntimeError(f"Dataflow launch failed ({type(exc).__name__}, status={status}): {safe_reason}") from None
         job = response.get("job") or {}
         job_id = job.get("id")
         if not job_id:
-            raise RuntimeError(f"Dataflow launch did not return job id: {response}")
+            diagnose()
+            raise RuntimeError("Dataflow launch did not return job id; inspect launcher logs")
 
+        reporter = ProgressReporter(
+            logger=self.log, credentials=credentials, project_id=self.project_id,
+            region=self.region, job_id=job_id, dag_id=dag_id, run_id=run_id,
+            task_id=self.task_id, interval=self.progress_log_interval_seconds,
+            secrets=diagnostic_secrets, details=self.progress_log_details,
+        )
+        reporter.emit(
+            "job_started", project_id=self.project_id, region=self.region,
+            destination_type=self.destination_type,
+            machine_type_configured=self.machine_type or "<service-default>",
+            temp_location_configured=self.temp_location,
+            bq_file_prefix_expected=self.temp_location.rstrip("/") + "/bq_load/"
+                if self.destination_type == "bigquery" else None,
+            prefix_status="configured_only_not_observed", write_method="FILE_LOADS"
+                if self.destination_type == "bigquery" else "GCS",
+            progress_interval_seconds=self.progress_log_interval_seconds,
+            source_jdbc_rows="unknown", worker_memory_usage="unknown",
+        )
         while True:
-            current = service.projects().locations().jobs().get(
-                projectId=self.project_id, location=self.region, jobId=job_id
-            ).execute()
+            try:
+                current = service.projects().locations().jobs().get(
+                    projectId=self.project_id, location=self.region, jobId=job_id
+                ).execute()
+                if not isinstance(current, dict):
+                    raise ValueError("invalid job status object")
+            except Exception as exc:
+                # An unavailable status observation must not fail a still-running job.
+                reporter.emit("job_state_unavailable", error_type=type(exc).__name__, state="unknown")
+                reporter.poll(job_state="unknown")
+                time.sleep(max(self.poll_interval_seconds, 60))
+                continue
             state = current.get("currentState")
-            LOGGER.info("Dataflow job=%s id=%s state=%s", job_name, job_id, state)
+            reporter.job_state(state)
+            reporter.poll(job_state=state, final=state in _TERMINAL_STATES)
             if state in _TERMINAL_STATES:
                 if state not in _SUCCESS_STATES:
+                    diagnose()
                     raise RuntimeError(f"Dataflow job {job_id} ended in {state}")
                 return {"job_id": job_id, "job_name": job_name, "state": state, "query_uri": query_uri}
             time.sleep(self.poll_interval_seconds)
@@ -244,6 +321,8 @@ class DataflowExecutor:
             impersonation_chain=runtime.get("impersonation_chain"),
             poll_interval_seconds=int(options.get("poll_interval_seconds", 30)),
             job_name_prefix=str(options.get("job_name_prefix", grape_id)),
+            progress_log_interval_seconds=options.get("progress_log_interval_seconds", 60),
+            progress_log_details=options.get("progress_log_details", False),
             retries=int(options.get("retries", 1)),
             retry_delay=timedelta(seconds=int(options.get("retry_delay_seconds", 300))),
             execution_timeout=timedelta(seconds=int(options.get("execution_timeout_seconds", 21600))),
