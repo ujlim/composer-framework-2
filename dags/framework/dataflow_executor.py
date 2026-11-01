@@ -1,6 +1,6 @@
 # Author: 임의진 (LIM UI JIN)
 # Created: 2026-09-30
-# Updated: 2026-10-30
+# Updated: 2026-10-31
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ def _safe_job_name(value: str) -> str:
 class DataflowJdbcOperator(BaseOperator):
     """Launch and wait for the UBIS JDBC export Flex Template."""
 
-    template_fields = ("sql", "destination", "job_name_prefix")
+    template_fields = ("sql", "destination", "job_name_prefix", "tables")
 
     def __init__(self, *, sql, db_type, connection_id, driver_jars, password_secret,
                  destination_type, destination, project_id, region, template_gcs_path,
@@ -74,6 +74,7 @@ class DataflowJdbcOperator(BaseOperator):
         self.progress_log_details = progress_log_details
         self.machine_type = machine_type
         self.progress_log_interval_seconds = validate_progress_interval(progress_log_interval_seconds)
+        self.tables = None
         self.sql = sql
         self.db_type = db_type
         self.connection_id = connection_id
@@ -108,38 +109,47 @@ class DataflowJdbcOperator(BaseOperator):
 
         run_id = context["run_id"]
         dag_id = context["dag"].dag_id
-        sql_object = f"sql/{dag_id}/{run_id}/{self.task_id}.sql"
-        GCSHook(gcp_conn_id=self.gcp_conn_id, impersonation_chain=self.impersonation_chain).upload(
-            bucket_name=self.system_bucket,
-            object_name=sql_object,
-            data=self.sql.encode("utf-8"),
-            mime_type="text/plain",
-        )
-        query_uri = f"gs://{self.system_bucket}/{sql_object}"
-
-        parameters = {
-            "db_type": self.db_type,
-            "connection_url": _jdbc_url(self.db_type, conn),
-            "username": conn.login,
-            "password_secret": str(password_secret),
-            "driver_jars": self.driver_jars,
-            "query_uri": query_uri,
-            "destination_type": self.destination_type,
-        }
-        if self.destination_type == "gcs":
-            parameters.update({
-                "output_path": str(self.destination["path"]),
-                "output_format": str(self.destination.get("format", "json")),
-            })
-            if self.destination.get("format") == "parquet":
-                parameters["parquet_schema"] = str(self.destination["schema"])
+        if getattr(self, "tables", None) is not None:
+            from framework.dataflow_multi import prepare_manifest
+            query_uri = prepare_manifest(self, context)
+            parameters = {
+                "db_type": self.db_type, "connection_url": _jdbc_url(self.db_type, conn),
+                "username": conn.login, "password_secret": str(password_secret),
+                "driver_jars": self.driver_jars, "tables_manifest_uri": query_uri,
+            }
         else:
-            parameters.update({
-                "output_table": str(self.destination["table"]),
-                "bq_schema": str(self.destination["schema"]),
-                "write_disposition": str(self.destination.get("write_disposition", "WRITE_APPEND")),
-                "create_disposition": str(self.destination.get("create_disposition", "CREATE_IF_NEEDED")),
-            })
+            sql_object = f"sql/{dag_id}/{run_id}/{self.task_id}.sql"
+            GCSHook(gcp_conn_id=self.gcp_conn_id, impersonation_chain=self.impersonation_chain).upload(
+                bucket_name=self.system_bucket,
+                object_name=sql_object,
+                data=self.sql.encode("utf-8"),
+                mime_type="text/plain",
+            )
+            query_uri = f"gs://{self.system_bucket}/{sql_object}"
+
+            parameters = {
+                "db_type": self.db_type,
+                "connection_url": _jdbc_url(self.db_type, conn),
+                "username": conn.login,
+                "password_secret": str(password_secret),
+                "driver_jars": self.driver_jars,
+                "query_uri": query_uri,
+                "destination_type": self.destination_type,
+            }
+            if self.destination_type == "gcs":
+                parameters.update({
+                    "output_path": str(self.destination["path"]),
+                    "output_format": str(self.destination.get("format", "json")),
+                })
+                if self.destination.get("format") == "parquet":
+                    parameters["parquet_schema"] = str(self.destination["schema"])
+            else:
+                parameters.update({
+                    "output_table": str(self.destination["table"]),
+                    "bq_schema": str(self.destination["schema"]),
+                    "write_disposition": str(self.destination.get("write_disposition", "WRITE_APPEND")),
+                    "create_disposition": str(self.destination.get("create_disposition", "CREATE_IF_NEEDED")),
+                })
 
         from googleapiclient.discovery import build
 
@@ -172,6 +182,8 @@ class DataflowJdbcOperator(BaseOperator):
 
         # Build the redaction set without letting optional secret lookup mask a failure.
         diagnostic_secrets = [conn.login, parameters["connection_url"], self.sql]
+        if getattr(self, "tables", None) is not None:
+            diagnostic_secrets.extend(item["sql"] for item in self.tables)
         try:
             diagnostic_secrets.append(conn.password)
         except Exception:
@@ -228,6 +240,15 @@ class DataflowJdbcOperator(BaseOperator):
             progress_interval_seconds=self.progress_log_interval_seconds,
             source_jdbc_rows="unknown", worker_memory_usage="unknown",
         )
+        if getattr(self, "tables", None) is not None:
+            for item in self.tables:
+                reporter.emit(
+                    "table_configured", table_id=item["id"],
+                    destination=item["destination"]["table"],
+                    write_disposition=item["destination"]["write_disposition"],
+                    source_jdbc_rows="unknown", committed_bigquery_rows="unknown",
+                    status="configured_only_not_observed",
+                )
         while True:
             try:
                 current = service.projects().locations().jobs().get(
@@ -245,10 +266,11 @@ class DataflowJdbcOperator(BaseOperator):
             reporter.job_state(state)
             reporter.poll(job_state=state, final=state in _TERMINAL_STATES)
             if state in _TERMINAL_STATES:
-                if state not in _SUCCESS_STATES:
+                if state not in _SUCCESS_STATES or (getattr(self, "tables", None) is not None and state != "JOB_STATE_DONE"):
                     diagnose()
                     raise RuntimeError(f"Dataflow job {job_id} ended in {state}")
-                return {"job_id": job_id, "job_name": job_name, "state": state, "query_uri": query_uri}
+                uri_key = "tables_manifest_uri" if getattr(self, "tables", None) is not None else "query_uri"
+                return {"job_id": job_id, "job_name": job_name, "state": state, uri_key: query_uri}
             time.sleep(self.poll_interval_seconds)
 
 
@@ -257,6 +279,9 @@ class DataflowExecutor:
 
     @classmethod
     def create_task(cls, *, dag, vine_config: LoadedConfig, grape: dict[str, Any], runtime: dict[str, Any], defaults: dict[str, Any]):
+        if grape.get("type") == "jdbc_tables_to_bigquery":
+            from framework.dataflow_multi import create_multi_task
+            return create_multi_task(cls, dag, vine_config, grape, runtime, defaults)
         grape_id = validate_airflow_id(grape.get("grape_id"), "grape.grape_id")
         grape_type = grape.get("type")
         if grape_type not in {"jdbc_to_gcs", "jdbc_to_bigquery"}:
