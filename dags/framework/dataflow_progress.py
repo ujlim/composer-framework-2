@@ -1,6 +1,6 @@
 # Author: 임의진 (LIM UI JIN)
 # Created: 2026-10-30
-# Updated: 2026-10-31
+# Updated: 2026-11-01
 """Bounded, fail-open Dataflow observations, never a source-row-count estimator."""
 from __future__ import annotations
 
@@ -20,6 +20,10 @@ MAX_STAGES = 50
 MAX_METRICS = 40
 MAX_WORK_ITEMS = 10
 
+# SUCCEEDED is the API value; retain COMPLETE for existing observer fixtures/clients.
+_SUCCESS_STATES = frozenset({'EXECUTION_STATE_SUCCEEDED', 'EXECUTION_STATE_COMPLETE'})
+_TERMINAL_STATES = _SUCCESS_STATES | {'EXECUTION_STATE_FAILED', 'EXECUTION_STATE_CANCELLED'}
+
 
 def validate_progress_interval(value):
     if type(value) is not int or value < 60:
@@ -37,7 +41,8 @@ def _time(value):
 def _elapsed(start, end, state, now):
     start = _time(start)
     # API endTime may be a prediction for unfinished stages.
-    end = _time(end) if state in {'EXECUTION_STATE_COMPLETE', 'EXECUTION_STATE_FAILED'} else now
+    # Missing/invalid terminal endTime stays unknown; never substitute observation time.
+    end = _time(end) if state in _TERMINAL_STATES else now
     if start is None or end is None or start.tzinfo is None or end.tzinfo is None:
         return None
     return max(0.0, (end - start).total_seconds())
@@ -103,6 +108,7 @@ class ProgressReporter:
         self.first_seen = {}
         self.stage_names = {}
         self.description_checked = False
+        self.previous_worker_names = frozenset()
 
     def job_state(self, state):
         """Emit state transitions only; status polling frequency is unchanged."""
@@ -134,6 +140,7 @@ class ProgressReporter:
             'JOB_STATE_CANCELLED':'취소', 'JOB_STATE_DRAINED':'드레인 종료',
             'JOB_STATE_UPDATED':'다른 Job으로 교체', 'unknown':'미확인',
             'EXECUTION_STATE_RUNNING':'실행 중', 'EXECUTION_STATE_COMPLETE':'완료',
+            'EXECUTION_STATE_SUCCEEDED':'완료', 'EXECUTION_STATE_CANCELLED':'취소',
             'EXECUTION_STATE_FAILED':'실패', 'EXECUTION_STATE_NOT_STARTED':'시작 전',
         }
         snapshot = fields.get('snapshot') or {}
@@ -163,10 +170,11 @@ class ProgressReporter:
             parts += ['원천읽기/BQ확정적재=미확인']
             stages = snapshot.get('stages') or []
             if stages:
-                counts = {key:sum(s.get('state') == key for s in stages) for key in
-                          ['EXECUTION_STATE_RUNNING','EXECUTION_STATE_COMPLETE','EXECUTION_STATE_FAILED']}
-                count_text = ', '.join(label + ' ' + str(counts[key]) for key, label in
-                    [('EXECUTION_STATE_RUNNING','실행'),('EXECUTION_STATE_COMPLETE','완료'),('EXECUTION_STATE_FAILED','실패')] if counts[key])
+                groups = [('실행', {'EXECUTION_STATE_RUNNING'}), ('완료', _SUCCESS_STATES),
+                          ('실패', {'EXECUTION_STATE_FAILED'}), ('취소', {'EXECUTION_STATE_CANCELLED'})]
+                counts = {label:sum(s.get('state') in states for s in stages)
+                          for label, states in groups}
+                count_text = ', '.join(label + ' ' + str(count) for label, count in counts.items() if count)
                 others = len(stages) - sum(counts.values())
                 if others:
                     count_text += (', ' if count_text else '') + f'기타/미확인 {others}'
@@ -183,6 +191,12 @@ class ProgressReporter:
                     parts += ['단계 변경=' + ', '.join(short(s.get('stage_id'),24) + ':' + state_names.get(s.get('state'), short(s.get('state','unknown').replace('EXECUTION_STATE_',''),18)) for s in changes[:3]) + (' 외 생략' if len(changes)>3 else '')]
             else:
                 parts += ['단계=미확인']
+            if not fields.get('cached') and snapshot.get('worker_names_changed'):
+                names = sorted({w.get('worker_name').strip() for w in snapshot.get('worker_sample', [])
+                                if isinstance(w.get('worker_name'), str) and w.get('worker_name').strip()})
+                if names:
+                    parts += ['관측 워커 VM 이름(일부)=' + ', '.join(short(name, 100) for name in names[:3])
+                              + (' 외 생략' if len(names) > 3 else '') + ' (전체/현재 VM 목록 아님)']
             # One job-level counter identity only. Never sum tentative/committed or transforms.
             metrics = [m for m in (snapshot.get('metrics') or []) if m.get('name') == 'post_jdbc_output_rows' and m.get('scalar') is not None]
             identities = {json.dumps([m.get('origin'), {k:v for k,v in (m.get('context') or {}).items() if k != 'tentative'}],sort_keys=True) for m in metrics}
@@ -365,6 +379,13 @@ class ProgressReporter:
                     session.close()
                 except Exception:
                     pass
+        # Only fresh nonempty observations advance the name set. Empty/error/cache results
+        # cannot establish VM deletion. This is a bounded work-item sample, not an inventory.
+        worker_names = frozenset(w['worker_name'].strip() for w in snapshot['worker_sample']
+                                if isinstance(w.get('worker_name'), str) and w['worker_name'].strip())
+        snapshot['worker_names_changed'] = bool(worker_names and worker_names != self.previous_worker_names)
+        if worker_names:
+            self.previous_worker_names = worker_names
         self.last_snapshot = snapshot
         self.emit('final_snapshot' if final else 'snapshot', snapshot=snapshot, cached=False)
         return snapshot
