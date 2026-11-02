@@ -1,5 +1,6 @@
-# Author: LIM UI JIN
+# Author: 임의진 (LIM UI JIN)
 # Created: 2026-09-09
+# Updated: 2026-11-02
 
 from __future__ import annotations
 
@@ -42,6 +43,9 @@ class PipelineCatalogLoader:
         vines = self._load_group(self.pipelines_dir / "vines", "vine")
         self._validate_unique_ids(roots, "root")
         self._validate_unique_ids(vines, "vine")
+        # Root and Vine share the same Airflow DAG ID namespace. Validate before
+        # selective construction so collisions cannot be hidden by a skipped DAG.
+        self._validate_unique_ids(roots + vines, "DAG")
         return PipelineCatalog(roots=roots, vines=vines)
 
     def _load_group(self, group_dir: Path, expected_key: str) -> list[LoadedConfig]:
@@ -55,6 +59,8 @@ class PipelineCatalogLoader:
                 with path.open("r", encoding="utf-8") as stream:
                     raw = yaml.safe_load(stream) or {}
                 data = require_mapping(raw, str(path))
+                if "root" in data and "vine" in data:
+                    raise ValueError("Config must not contain both root and vine sections")
                 if expected_key not in data:
                     raise ValueError(f"Top-level '{expected_key}' section is required")
                 configs.append(LoadedConfig(data=data, source_path=path))

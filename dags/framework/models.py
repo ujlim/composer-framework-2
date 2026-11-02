@@ -1,5 +1,6 @@
-# Author: LIM UI JIN
+# Author: 임의진 (LIM UI JIN)
 # Created: 2026-09-09
+# Updated: 2026-11-02
 
 from __future__ import annotations
 
@@ -22,5 +23,5 @@ class LoadedConfig:
     @property
     def id(self) -> str:
         if "root" in self.data:
-            return str(self.data["root"]["root_id"])
-        return str(self.data["vine"]["vine_id"])
+            return str(self.data["root"]["root_id"]).strip()
+        return str(self.data["vine"]["vine_id"]).strip()

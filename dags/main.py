@@ -1,3 +1,6 @@
+# Author: 임의진 (LIM UI JIN)
+# Created: 2026-11-02 (selective parsing revision; original date not recorded)
+# Updated: 2026-11-02
 """
 Cloud Composer 3 / Apache Airflow DAG entry point.
 
@@ -20,6 +23,7 @@ from airflow.models.dag import DAG
 
 from framework.config_loader import PipelineCatalogLoader
 from framework.logger import get_logger
+from framework.parsing_context import get_target_dag_id
 from framework.root_factory import RootFactory
 from framework.vine_factory import VineFactory
 
@@ -89,8 +93,16 @@ except Exception:
     raise
 
 
+# Keep the complete catalog for duplicate detection and Root dependency checks.
+# Only DAG/task construction (including SQL/schema reads) is selective.
+target_dag_id = get_target_dag_id()
+selected_pipeline_count = 0
+
 # Vine DAG를 먼저 등록합니다.
 for vine_config in catalog.vines:
+    if target_dag_id is not None and vine_config.id != target_dag_id:
+        continue
+    selected_pipeline_count += 1
     try:
         vine_dag = VineFactory(vine_config).create()
 
@@ -121,6 +133,9 @@ for vine_config in catalog.vines:
 
 # Root DAG를 나중에 등록합니다.
 for root_config in catalog.roots:
+    if target_dag_id is not None and root_config.id != target_dag_id:
+        continue
+    selected_pipeline_count += 1
     try:
         root_dag = RootFactory(
             root_config,
@@ -157,6 +172,10 @@ LOGGER.info(
     extra={
         "event": "dag_registration_completed",
         "registered_dag_count": len(registered_dag_ids),
+        "parsing_mode": "targeted" if target_dag_id is not None else "full",
+        "target_dag_id": target_dag_id,
+        "selected_pipeline_count": selected_pipeline_count,
+        "skipped_pipeline_count": len(catalog.vines) + len(catalog.roots) - selected_pipeline_count,
         "registration_error_count": len(registration_errors),
         "registered_dag_ids": sorted(registered_dag_ids),
     },
@@ -167,7 +186,7 @@ LOGGER.info(
 # 조용히 DAG 0개로 끝내지 않고 Import Error를 발생시킵니다.
 configured_pipeline_count = len(catalog.vines) + len(catalog.roots)
 
-if configured_pipeline_count > 0 and not registered_dag_ids:
+if selected_pipeline_count > 0 and not registered_dag_ids:
     error_summary = "\n".join(
         (
             f"- kind={item['dag_kind']}, "
@@ -190,4 +209,12 @@ if configured_pipeline_count == 0:
         f"{PIPELINES_DIR}. Expected paths such as "
         "'pipelines/vines/*/config.yaml' or "
         "'pipelines/roots/*/config.yaml'."
+    )
+
+# An unknown target can belong to another DAG file. Do not construct unrelated
+# DAGs or confuse intentional selection with a factory failure.
+if target_dag_id is not None and selected_pipeline_count == 0:
+    LOGGER.warning(
+        "Requested DAG is not present in this pipeline catalog",
+        extra={"event": "dag_target_not_found", "target_dag_id": target_dag_id},
     )

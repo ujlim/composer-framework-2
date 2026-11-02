@@ -9,3 +9,9 @@
 
 See [SFTP connection order, BigQuery durable compatibility and polling defaults](docs/runtime-options-update.md)
 for behavior, explicit overrides, deployment checks and rollback guidance.
+
+## Selective DAG parsing
+
+[선택적 DAG 생성·전체 이름 유일성 검사 가이드](docs/selective-dag-parsing.md):
+전체 scheduler 발견을 유지하면서 실행 대상 DAG만 생성합니다. 이름→폴더 조회 CLI,
+기존 이름 충돌 보고, 배포 검증과 롤백 절차를 포함합니다.
