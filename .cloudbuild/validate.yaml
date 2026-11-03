@@ -1,0 +1,21 @@
+# No live bucket access required. Validation image must have matching Airflow,
+# providers, Python, PyYAML and git. Use a user-managed validation-only identity.
+steps:
+  - id: assemble-and-validate
+    name: '${_VALIDATION_IMAGE}'
+    entrypoint: bash
+    env: ['PYTHONDONTWRITEBYTECODE=1', 'AIRFLOW__CORE__LOAD_EXAMPLES=False']
+    args:
+      - -ceu
+      - |
+        python tools/deployment/candidate.py assemble \
+          --sources '${_SOURCES_LOCK}' --source-commit '${COMMIT_SHA}' --output /workspace/candidate
+        python tools/deployment/candidate.py validate --candidate /workspace/candidate
+        python -m unittest discover -s tests
+        python tools/deployment/full_parse.py --candidate /workspace/candidate --image '${_VALIDATION_IMAGE}'
+substitutions:
+  _SOURCES_LOCK: 'deployment/sources.example.json'
+  _VALIDATION_IMAGE: 'REPLACE_REGISTRY/composer-validation@sha256:REPLACE_DIGEST'
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 1200s

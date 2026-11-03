@@ -1,0 +1,10 @@
+{
+  "sources": [
+    {
+      "name": "composer-framework-2",
+      "repository": "..",
+      "commit": "$COMMIT_SHA",
+      "dags": "dags"
+    }
+  ]
+}

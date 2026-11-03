@@ -1,0 +1,36 @@
+# Copy to .cloudbuild/triggers.yaml ONLY after project/IAM/source and image review.
+# SSM reads this file from its DEFAULT branch (normally main).
+triggers:
+  - name: composer-prod-release
+    project: REPLACE_BUILD_PROJECT
+    configFilePath: .cloudbuild/deploy.yaml
+    eventType: push
+    includedGitRefs: '^prod$'
+    serviceAccount: projects/REPLACE_BUILD_PROJECT/serviceAccounts/REPLACE_DEPLOY_SA
+    disabled: true
+    substitutions:
+      _SOURCES_LOCK: 'deployment/sources.example.json'
+      _VALIDATION_IMAGE: 'REPLACE_REGISTRY/composer-validation@sha256:REPLACE_DIGEST'
+      _TOOLS_IMAGE: 'REPLACE_REGISTRY/deployment-tools@sha256:REPLACE_DIGEST'
+      _TARGET: 'gs://REPLACE_COMPOSER_BUCKET/dags'
+      _CONTROL: 'gs://REPLACE_CONTROL_BUCKET/REPLACE_ENVIRONMENT'
+      _RELEASE_BRANCH: 'prod'
+      _EXECUTE: 'false'
+  - name: composer-dev-release
+    project: REPLACE_BUILD_PROJECT
+    configFilePath: .cloudbuild/deploy.yaml
+    eventType: push
+    includedGitRefs: '^dev$'
+    serviceAccount: projects/REPLACE_BUILD_PROJECT/serviceAccounts/REPLACE_DEV_DEPLOY_SA
+    disabled: true
+    substitutions:
+      _SOURCES_LOCK: 'deployment/sources.example.json'
+      _VALIDATION_IMAGE: 'REPLACE_REGISTRY/dev-composer-validation@sha256:REPLACE_DIGEST'
+      _TOOLS_IMAGE: 'REPLACE_REGISTRY/deployment-tools@sha256:REPLACE_DIGEST'
+      _TARGET: 'gs://REPLACE_DEV_COMPOSER_BUCKET/dags'
+      _CONTROL: 'gs://REPLACE_CONTROL_BUCKET/REPLACE_DEV_ENVIRONMENT'
+      _RELEASE_BRANCH: 'dev'
+      _EXECUTE: 'false'
+# After operator setup, set disabled: false and _EXECUTE: 'true' for each trigger.
+# dev push -> development bucket; approved main -> prod merge -> production bucket.
+# main maintains versions; no main deployment trigger.
