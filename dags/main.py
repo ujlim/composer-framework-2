@@ -14,6 +14,7 @@ A broken pipeline is isolated so other DAGs can still be registered.
 from __future__ import annotations
 
 from pathlib import Path
+import json
 from typing import Any
 
 # 중요:
@@ -26,6 +27,7 @@ from framework.logger import get_logger
 from framework.parsing_context import get_target_dag_id
 from framework.root_factory import RootFactory
 from framework.vine_factory import VineFactory
+from framework.utils import validate_airflow_id
 
 
 LOGGER = get_logger(__name__)
@@ -59,7 +61,7 @@ def register_dag(dag: DAG, dag_kind: str, config_path: Path) -> None:
         )
 
     # Airflow DAG parser가 module-level DAG 객체를 발견하도록 등록합니다.
-    globals()[dag.dag_id] = dag
+    globals()[f"_framework_registered_dag_{len(registered_dag_ids)}"] = dag
     registered_dag_ids.add(dag.dag_id)
 
     LOGGER.info(
@@ -96,6 +98,32 @@ except Exception:
 # Keep the complete catalog for duplicate detection and Root dependency checks.
 # Only DAG/task construction (including SQL/schema reads) is selective.
 target_dag_id = get_target_dag_id()
+if target_dag_id is not None:
+    try:
+        target_dag_id = validate_airflow_id(target_dag_id, "target_dag_id")
+        if len(target_dag_id) > 250:
+            raise ValueError("DAG ID exceeds Airflow length limit")
+    except ValueError:
+        raise RuntimeError("Requested DAG ID is invalid") from None
+
+# Include the payload in the rendered message, not only structured `extra`,
+# because some Airflow log formatters discard extra fields.
+if catalog.blocked_ids:
+    details = {
+        "blocked_ids": catalog.blocked_ids,
+        "affected_roots": catalog.affected_roots,
+    }
+    LOGGER.error(
+        "[SMS.CRITICAL] Pipeline DAG IDs quarantined: %s",
+        json.dumps(details, ensure_ascii=True, sort_keys=True),
+        extra={"event": "pipeline_ids_quarantined", **details},
+    )
+    registration_errors.append({"dag_kind": "catalog", "config_path": "multiple", "error": json.dumps(details, ensure_ascii=True, sort_keys=True)})
+
+blocked_root_ids = {info["dag_id"] for info in catalog.affected_roots.values()}
+if target_dag_id is not None and (target_dag_id in catalog.blocked_ids or target_dag_id in blocked_root_ids):
+    raise RuntimeError(f"Requested DAG is quarantined due to an invalid or duplicate DAG ID: {target_dag_id}")
+
 selected_pipeline_count = 0
 
 # Vine DAG를 먼저 등록합니다.
@@ -184,9 +212,9 @@ LOGGER.info(
 
 # 설정 파일은 발견됐는데 모든 DAG 생성이 실패한 경우,
 # 조용히 DAG 0개로 끝내지 않고 Import Error를 발생시킵니다.
-configured_pipeline_count = len(catalog.vines) + len(catalog.roots)
+configured_pipeline_count = catalog.discovered_count
 
-if selected_pipeline_count > 0 and not registered_dag_ids:
+if (selected_pipeline_count > 0 or (target_dag_id is None and configured_pipeline_count > 0)) and not registered_dag_ids:
     error_summary = "\n".join(
         (
             f"- kind={item['dag_kind']}, "

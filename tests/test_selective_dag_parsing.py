@@ -164,25 +164,64 @@ class ParsingIntegrationTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.run_main()
 
-    def test_same_kind_duplicate_rejected_even_when_not_selected(self):
+    def duplicate_fixtures(self, cross_kind=False, whitespace=False):
         self.fixtures()
-        self.config('vine', 'duplicate', 'vine_b')
-        self.target = 'vine_a'
-        with self.assertRaisesRegex(ValueError, 'Duplicate'):
+        original = self.pipelines / 'vines' / 'another-folder' / 'config.yaml'
+        duplicate = self.config('root' if cross_kind else 'vine', 'duplicate',
+                                '  vine_b  ' if whitespace else 'vine_b')
+        unaffected_root = self.config('root', 'safe', 'root_safe', vines=[{'vine_id': 'vine_a'}])
+        return original, duplicate, unaffected_root
+
+    def test_duplicate_quarantine_isolates_all_definitions_and_affected_roots(self):
+        for cross_kind in (False, True):
+            with self.subTest(cross_kind=cross_kind):
+                # Each subcase has its own fixture tree.
+                shutil.rmtree(self.pipelines)
+                self.pipelines.mkdir()
+                self.calls.clear()
+                original, duplicate, _ = self.duplicate_fixtures(cross_kind)
+                result = self.run_main()
+                self.assertEqual(result['registered_dag_ids'], {'vine_a', 'root_safe'})
+                self.assertEqual(result['catalog'].blocked_ids['vine_b'],
+                                 tuple(sorted((str(original), str(duplicate)))))
+                root_path = str(self.pipelines / 'roots' / 'root-folder' / 'config.yaml')
+                self.assertEqual(result['catalog'].affected_roots[root_path],
+                                 {'dag_id': 'root_a', 'blocked_ids': ['vine_b']})
+                self.assertEqual(self.calls, [('vine', 'vine_a'), ('root', 'root_safe', {'vine_a'})])
+                self.assertEqual(len(result['registration_errors']), 1)
+
+    def test_targeted_unaffected_vine_and_root_use_full_catalog(self):
+        self.duplicate_fixtures()
+        for target, expected_calls in (
+            ('vine_a', [('vine', 'vine_a')]),
+            ('root_safe', [('root', 'root_safe', {'vine_a'})]),
+        ):
+            with self.subTest(target=target):
+                self.calls.clear()
+                self.target = target
+                result = self.run_main()
+                self.assertEqual(result['registered_dag_ids'], {target})
+                self.assertEqual(self.calls, expected_calls)
+                self.assertIn('root_a', {x['dag_id'] for x in result['catalog'].affected_roots.values()})
+
+    def test_target_duplicate_or_affected_root_fails_clearly(self):
+        self.duplicate_fixtures()
+        for target in ('vine_b', 'root_a'):
+            with self.subTest(target=target):
+                self.target = target
+                with self.assertRaisesRegex(RuntimeError, 'quarantined.*' + target):
+                    self.run_main()
+                self.assertEqual(self.calls, [])
+
+    def test_all_definitions_quarantined_is_error(self):
+        self.config('vine', 'first', 'dup')
+        self.config('vine', 'second', 'dup')
+        with self.assertRaisesRegex(RuntimeError, 'No DAGs were registered'):
             self.run_main()
         self.assertEqual(self.calls, [])
 
-    def test_cross_kind_duplicate_rejected_even_when_not_selected(self):
-        self.fixtures()
-        self.config('root', 'duplicate', 'vine_b')
-        self.target = 'vine_a'
-        with self.assertRaisesRegex(ValueError, 'Duplicate'):
-            self.run_main()
-        self.assertEqual(self.calls, [])
-
-    def test_catalog_failure_marker_in_rendered_error_log(self):
-        # Use the production logger and an actual handler/formatter, rather than
-        # asserting only the LOGGER.exception arguments on a mock.
+    def test_critical_quarantine_marker_in_real_rendered_log(self):
+        # Use the production logger and handler: extra fields alone can be lost.
         spec = importlib.util.spec_from_file_location('production_logger', FRAMEWORK / 'logger.py')
         logger_module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(logger_module)
@@ -197,16 +236,12 @@ class ParsingIntegrationTests(unittest.TestCase):
         self.addCleanup(logger.removeHandler, handler)
         self.addCleanup(logger.setLevel, old_level)
         self.addCleanup(setattr, logger, 'propagate', old_propagate)
-
         with patch.dict(sys.modules, {'framework.logger': logger_module}):
-            # Normal registrations do not carry the critical marker.
             self.fixtures()
             self.run_main()
             self.assertNotIn('[SMS.CRITICAL]', stream.getvalue())
             stream.seek(0)
             stream.truncate(0)
-
-            # An isolated factory error is not a catalog failure.
             self.failed.add('vine_a')
             self.run_main()
             self.assertIn('Failed to register Vine DAG', stream.getvalue())
@@ -214,29 +249,57 @@ class ParsingIntegrationTests(unittest.TestCase):
             self.failed.clear()
             stream.seek(0)
             stream.truncate(0)
-
-            # A cross-kind collision is caught even for an unselected DAG.
             original = self.pipelines / 'vines' / 'another-folder' / 'config.yaml'
             duplicate = self.config('root', 'duplicate', 'vine_b')
-            self.target = 'vine_a'
-            with self.assertRaisesRegex(ValueError, 'Duplicate DAG ID'):
-                self.run_main()
-            rendered = stream.getvalue()
-            self.assertIn('ERROR:[SMS.CRITICAL] Failed to load pipeline catalog', rendered)
-            self.assertIn('Traceback (most recent call last)', rendered)
-            self.assertIn("Duplicate DAG ID 'vine_b'", rendered)
-            self.assertIn(str(original), rendered)
-            self.assertIn(str(duplicate), rendered)
-
-    def test_same_kind_duplicate_has_critical_marker(self):
-        self.fixtures()
-        self.config('vine', 'duplicate', 'vine_b')
-        with self.assertRaisesRegex(ValueError, 'Duplicate vine ID'):
+            second = self.config('vine', 'second', 'vine_a')
+            self.target = 'unknown_target'
             self.run_main()
+            rendered = stream.getvalue()
+            self.assertIn('ERROR:[SMS.CRITICAL] Pipeline DAG IDs quarantined:', rendered)
+            for value in ('vine_a', 'vine_b', str(original), str(duplicate), str(second),
+                          str(self.pipelines / 'vines' / 'folder-not-vine-id' / 'config.yaml'),
+                          'root_a', str(self.pipelines / 'roots' / 'root-folder' / 'config.yaml')):
+                self.assertIn(value, rendered)
+
+    def test_catalog_exception_still_fails_with_critical_marker(self):
+        self.fixtures()
+        with patch.object(self.loader.PipelineCatalogLoader, 'load', side_effect=OSError('catalog failed')):
+            with self.assertRaisesRegex(OSError, 'catalog failed'):
+                self.run_main()
         self.logger.exception.assert_called_once_with(
             '[SMS.CRITICAL] Failed to load pipeline catalog',
             extra={'event': 'pipeline_catalog_load_failed', 'pipelines_dir': str(self.pipelines)},
         )
+
+    def test_invalid_ids_are_isolated_and_reported_without_data_leaks(self):
+        self.fixtures()
+        bad = self.config('vine', 'bad', 'bad id')
+        missing = self.config('vine', 'missing', None)
+        with self.assertLogs('framework.config_loader', level='ERROR') as logged:
+            result = self.run_main()
+        self.assertEqual(result['registered_dag_ids'], {'vine_a', 'vine_b', 'root_a'})
+        self.assertNotIn('bad id', result['catalog'].blocked_ids)
+        self.assertTrue(any(str(bad) in line for line in logged.output))
+        self.assertFalse(any('bad id' in line for line in logged.output))
+        self.assertTrue(any(str(missing) in line for line in logged.output))
+        self.assertFalse(any('unsupported characters' in line for line in logged.output))
+
+    def test_dag_id_cannot_overwrite_module_globals(self):
+        for identifier in ('LOGGER', 'registered_dag_ids', 'register_dag', 'catalog', 'VineFactory'):
+            with self.subTest(identifier=identifier):
+                shutil.rmtree(self.pipelines)
+                self.pipelines.mkdir()
+                self.calls.clear()
+                self.config('vine', 'collision', identifier)
+                self.config('vine', 'other', 'other')
+                result = self.run_main()
+                self.assertEqual(result['registered_dag_ids'], {identifier, 'other'})
+                self.assertEqual(self.get_dag(result, identifier).dag_id, identifier)
+
+    @staticmethod
+    def get_dag(namespace, dag_id):
+        return next(value for name, value in namespace.items()
+                    if name.startswith('_framework_registered_dag_') and value.dag_id == dag_id)
 
     def test_bad_yaml_isolated_and_good_config_retained(self):
         self.fixtures()
@@ -281,23 +344,81 @@ class ParsingIntegrationTests(unittest.TestCase):
         self.target = 'vine_a'
         selected = self.run_main()
         self.assertEqual(selected['registered_dag_ids'], {'vine_a'})
-        self.assertEqual(self.graph(selected['vine_a']), self.graph(full['vine_a']))
+        self.assertEqual(self.graph(self.get_dag(selected, 'vine_a')), self.graph(self.get_dag(full, 'vine_a')))
 
-    def test_normalized_duplicate_ids_rejected_before_selection(self):
-        self.fixtures()
-        self.config('vine', 'duplicate', '  vine_b  ')
-        self.target = 'vine_a'
-        with self.assertRaisesRegex(ValueError, 'Duplicate'):
-            self.run_main()
-        self.assertEqual(self.calls, [])
+    def test_whitespace_duplicates_and_references_are_quarantined(self):
+        for cross_kind in (False, True):
+            with self.subTest(cross_kind=cross_kind):
+                shutil.rmtree(self.pipelines)
+                self.pipelines.mkdir()
+                self.calls.clear()
+                original, duplicate, _ = self.duplicate_fixtures(cross_kind, whitespace=True)
+                self.config('root', 'root-folder', 'root_a', vines=[{'vine_id': '  vine_b  '}])
+                self.target = 'vine_a'
+                result = self.run_main()
+                self.assertEqual(result['registered_dag_ids'], {'vine_a'})
+                self.assertEqual(result['catalog'].blocked_ids['vine_b'],
+                                 tuple(sorted((str(original), str(duplicate)))))
+                affected = result['catalog'].affected_roots
+                self.assertEqual(affected[str(self.pipelines / 'roots/root-folder/config.yaml')]['blocked_ids'], ['vine_b'])
 
-    def test_normalized_cross_kind_duplicate_rejected(self):
+    def test_repeated_yaml_keys_quarantine_every_valid_alias(self):
         self.fixtures()
-        self.config('root', 'duplicate', ' vine_b ')
-        self.target = 'vine_a'
-        with self.assertRaisesRegex(ValueError, 'Duplicate'):
-            self.run_main()
-        self.assertEqual(self.calls, [])
+        duplicate = self.pipelines / 'vines' / 'bad-keys' / 'config.yaml'
+        duplicate.parent.mkdir(parents=True)
+        duplicate.write_text('vine:\n  vine_id: vine_a\n  vine_id: vine_b\n', encoding='utf-8')
+        self.config('vine', 'safe', 'safe')
+        with self.assertLogs('framework.config_loader', level='ERROR'):
+            result = self.run_main()
+        self.assertEqual(result['registered_dag_ids'], {'safe'})
+        for dag_id, folder in (('vine_a', 'folder-not-vine-id'), ('vine_b', 'another-folder')):
+            self.assertEqual(set(result['catalog'].blocked_ids[dag_id]), {
+                str(duplicate), str(self.pipelines / 'vines' / folder / 'config.yaml')})
+        affected = result['catalog'].affected_roots[str(self.pipelines / 'roots/root-folder/config.yaml')]
+        self.assertEqual(affected, {'dag_id': 'root_a', 'blocked_ids': ['vine_a', 'vine_b']})
+
+    def test_repeated_keys_with_merged_id_and_explicit_override(self):
+        self.config('vine', 'shared', 'shared')
+        self.config('vine', 'unique', 'unique')
+        bad = self.pipelines / 'vines' / 'bad' / 'config.yaml'
+        bad.parent.mkdir(parents=True)
+        bad.write_text('defaults: &base {vine_id: shared}\nvine: {<<: *base, vine_id: unique, owner: a, owner: b}\n')
+        with self.assertLogs('framework.config_loader', level='ERROR'):
+            result = self.run_main()
+        self.assertEqual(result['registered_dag_ids'], {'shared'})
+        self.assertIn('unique', result['catalog'].blocked_ids)
+        self.assertNotIn('shared', result['catalog'].blocked_ids)
+        bad.write_text('defaults: &base {vine_id: shared}\nvine: {<<: *base, owner: a, owner: b}\n')
+        with self.assertLogs('framework.config_loader', level='ERROR'):
+            result = self.run_main()
+        self.assertEqual(result['registered_dag_ids'], {'unique'})
+        self.assertIn('shared', result['catalog'].blocked_ids)
+
+    def test_repeated_keys_top_level_merge_override(self):
+        self.config('vine', 'shared', 'shared')
+        self.config('vine', 'unique', 'unique')
+        bad = self.pipelines / 'vines' / 'bad' / 'config.yaml'
+        bad.parent.mkdir(parents=True)
+        bad.write_text('base: &base {vine: {vine_id: shared}}\n<<: *base\nvine: {vine_id: unique, owner: a, owner: b}\n')
+        with self.assertLogs('framework.config_loader', level='ERROR'):
+            result = self.run_main()
+        self.assertEqual(result['registered_dag_ids'], {'shared'})
+        self.assertIn('unique', result['catalog'].blocked_ids)
+        self.assertNotIn('shared', result['catalog'].blocked_ids)
+
+    def test_dual_section_alias_collisions_quarantine_both_kinds(self):
+        self.fixtures()
+        ambiguous = self.config('vine', 'ambiguous', 'vine_a', root={'root_id': 'root_a'})
+        self.config('vine', 'safe', 'safe')
+        with self.assertLogs('framework.config_loader', level='ERROR'):
+            result = self.run_main()
+        self.assertEqual(result['registered_dag_ids'], {'vine_b', 'safe'})
+        for dag_id in ('vine_a', 'root_a'):
+            self.assertIn(str(ambiguous), result['catalog'].blocked_ids[dag_id])
+        self.target = 'root_a'
+        with self.assertLogs('framework.config_loader', level='ERROR'):
+            with self.assertRaisesRegex(RuntimeError, 'quarantined.*root_a'):
+                self.run_main()
 
     def test_ambiguous_dual_section_config_is_isolated(self):
         self.fixtures()
@@ -341,25 +462,25 @@ class ParsingIntegrationTests(unittest.TestCase):
 
     def test_real_root_dependency_graph_matches_full_parse(self):
         self.real_fixtures()
-        full = self.run_main()['root_a']
+        full = self.get_dag(self.run_main(), 'root_a')
         self.target = 'root_a'
         selected = self.run_main()
         self.assertEqual(selected['registered_dag_ids'], {'root_a'})
-        self.assertEqual(self.graph(selected['root_a']), self.graph(full))
-        trigger = selected['root_a'].task_dict['trigger_vine_b']
+        self.assertEqual(self.graph(self.get_dag(selected, 'root_a')), self.graph(full))
+        trigger = self.get_dag(selected, 'root_a').task_dict['trigger_vine_b']
         self.assertEqual(trigger.upstream_task_ids, {'trigger_vine_a'})
         self.assertEqual(trigger.trigger_dag_id, 'vine_b')
         self.assertTrue(trigger.wait_for_completion)
 
     def test_real_file_sensor_and_vine_graph_match_full_parse(self):
         self.real_fixtures()
-        full = self.run_main()['vine_a']
+        full = self.get_dag(self.run_main(), 'vine_a')
         self.target = 'vine_a'
         selected = self.run_main()
         self.assertEqual(selected['registered_dag_ids'], {'vine_a'})
-        self.assertEqual(self.graph(selected['vine_a']), self.graph(full))
+        self.assertEqual(self.graph(self.get_dag(selected, 'vine_a')), self.graph(full))
         full_sensor = full.task_dict['wait_fin']
-        selected_sensor = selected['vine_a'].task_dict['wait_fin']
+        selected_sensor = self.get_dag(selected, 'vine_a').task_dict['wait_fin']
         for attribute in ('bucket', 'object', 'poke_interval', 'deferrable'):
             self.assertEqual(getattr(selected_sensor, attribute), getattr(full_sensor, attribute))
         self.assertEqual(selected_sensor.poke_interval, 95)

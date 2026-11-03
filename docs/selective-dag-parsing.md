@@ -1,7 +1,7 @@
 # 선택적 DAG 생성·파싱 가이드
 
 - 작성자: 임의진 (LIM UI JIN)
-- 작성/수정: 2026-11-02
+- 작성/수정: 2026-11-03
 - 기준: `main` d1b14ef59bfd70fbba388a6a70c51c107cdec9e1
 - 작업 브랜치: `feature/26.1102.selective-dag-parsing`
 
@@ -15,9 +15,10 @@
 
 | 상황 | 생성 범위 |
 |---|---|
-| parsing context `dag_id=None` | 모든 Vine → 모든 Root, 기존 순서 |
+| parsing context `dag_id=None` | 격리 대상 외 Vine → Root, 기존 순서 |
 | 특정 Vine ID | 해당 Vine 전체 graph만 |
-| 특정 Root ID | 해당 Root 전체 graph만. 전체 catalog의 Vine ID로 참조 검증 |
+| 특정 Root ID | 격리 대상이 아니면 해당 Root 전체 graph만. 전체 catalog의 유효한 Vine ID로 참조 검증 |
+| 중복 ID 또는 그 ID를 참조하는 Root가 대상 | 명시적 오류. 해당 DAG 생성 안 함 |
 | 존재하지 않는 대상 ID | DAG 0개 + `dag_target_not_found` warning; 무관한 DAG는 생성하지 않음 |
 | context API 미지원·오류·비문자열 또는 빈 ID | warning 후 전체 생성으로 fallback |
 | 구성 자체 0개 | 기존처럼 Import Error |
@@ -25,7 +26,11 @@
 
 ID는 YAML의 `vine.vine_id` / `root.root_id`입니다. 폴더 이름과 달라도 동작합니다. Root 의존성 확인에 필요한 전체 Vine ID 집합을 유지하고, 선택되지 않은 Vine 객체는 만들지 않습니다. 기존에도 Root 참조 검증은 catalog 기준이지 Vine factory 성공 보장이 아니었습니다. 비대상 DAG의 factory 오류는 worker targeted parse에서 확인하지 않으며 전체 scheduler parse에서 확인합니다.
 
-동일 종류 내 중복 ID 검사에 더해 **Root와 Vine 사이의 중복 DAG ID도 catalog 단계에서 실패**시킵니다. 이전에는 등록 단계에서 일부가 먼저 등록될 수 있었지만 선택적 실행에서 충돌이 숨겨지지 않도록 fail-fast 처리했습니다. 배포 전 Root/Vine 전체 ID 중복을 해소해야 합니다. YAML 읽기/문법 오류는 기존처럼 로그 후 해당 구성을 건너뛰고, 나머지를 로드합니다. 기존 catalog의 ID 필드 오류 처리 방식은 바꾸지 않았습니다. ID 앞뒤 공백은 기존 factory와 동일하게 제거하여 선택/중복 검사에 사용합니다. `root`와 `vine` 섹션을 동시에 갖는 모호한 YAML은 로드 오류로 격리합니다.
+전체 카탈로그에서 같은 종류뿐 아니라 Root/Vine 사이의 중복도 검사합니다. 앞뒤 공백을 제거한 ID가 중복되면 어느 한 정의도 선택하지 않고 **해당 ID의 모든 정의를 격리**합니다. 중복 ID를 Vine으로 참조하는 Root도 전체 카탈로그에서 찾아 격리합니다. 관련 없는 정상 DAG는 계속 생성합니다. 선택적 파싱에서도 전체 카탈로그를 먼저 검사하므로 선택하지 않은 중복이 가려지지 않습니다. 잘못된 ID, `root`/`vine` 섹션 혼재, 중복 YAML key는 해당 구성을 제외하며, 모호한 파일에서 확인 가능한 유효 ID가 다른 정의와 겹치면 그 ID도 격리합니다. 일반 YAML 읽기/문법 오류는 해당 구성만 제외합니다. ID 검사는 Airflow 허용 문자와 길이 제한을 적용합니다.
+
+중복이나 모호한 ID는 `[SMS.CRITICAL]` 오류 로그에 ID별 설정 경로와 영향받는 Root ID/경로를 기록합니다. 이 표식 자체가 SMS 전송을 보장하지 않으며 별도의 로그 모니터링 설정이 필요합니다. 배포 전 CLI는 계속 엄격히 검사하므로 격리 기능이 검증 실패를 통과시키지 않습니다.
+
+**운영 주의:** 격리는 새 파싱에서 DAG 객체를 등록하지 않는 동작입니다. 이미 Airflow 메타데이터에 직렬화된 이전 DAG를 즉시 비활성화하거나 삭제하거나, 이미 예약·실행 중인 작업을 중지한다는 보장은 없습니다. 배포 후 운영자가 실제 DAG 상태와 진행 중인 작업을 확인하고 필요한 조치를 별도 승인·수행해야 합니다. 이 변경은 자동 pause, 삭제 또는 배포를 하지 않습니다.
 
 ## 호환성 및 로그
 
@@ -44,7 +49,7 @@ python -m unittest discover -s tests
 python -m compileall -q dags tests
 ```
 
-오프라인 전체 246개 테스트와 compileall이 통과했습니다. 이 중 선택적 파싱 26개, 이름 검사 CLI 14개 회귀 테스트를 추가했습니다. 오프라인 검증은 Airflow API와 클라우드 연산을 mock 처리합니다. 3개 YAML fixture에서 전체 parse는 YAML 3회/팩토리 3회, Vine 대상 parse는 YAML 3회/팩토리 1회입니다. 이는 호출 수 측정이며 운영 시간·메모리 절감률 추정이 아닙니다. 실제 Composer smoke test와 import 오류 확인은 별도 필요합니다.
+오프라인 검증은 Airflow API와 클라우드 연산을 mock 처리합니다. 각 파싱은 모든 YAML 파일을 읽어 중복 key와 ID를 검사하며 선택된 factory만 생성합니다. 테스트 결과는 운영 시간·메모리 절감률 추정이 아닙니다. 실제 Composer smoke test와 import 오류 확인은 별도 필요합니다.
 
 ## 배포 (승인 후 운영자가 수행)
 
