@@ -82,7 +82,7 @@ try:
     catalog = PipelineCatalogLoader(PIPELINES_DIR).load()
 except Exception:
     LOGGER.exception(
-        "Failed to load pipeline catalog",
+        "[SMS.CRITICAL] Failed to load pipeline catalog",
         extra={
             "event": "pipeline_catalog_load_failed",
             "pipelines_dir": str(PIPELINES_DIR),

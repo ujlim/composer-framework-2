@@ -3,6 +3,9 @@
 # Updated: 2026-11-02
 """Offline parsing-context/catalog integration; no Airflow installation or cloud calls."""
 import importlib
+import importlib.util
+import io
+import logging
 from pathlib import Path
 import runpy
 import shutil
@@ -176,6 +179,64 @@ class ParsingIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Duplicate'):
             self.run_main()
         self.assertEqual(self.calls, [])
+
+    def test_catalog_failure_marker_in_rendered_error_log(self):
+        # Use the production logger and an actual handler/formatter, rather than
+        # asserting only the LOGGER.exception arguments on a mock.
+        spec = importlib.util.spec_from_file_location('production_logger', FRAMEWORK / 'logger.py')
+        logger_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(logger_module)
+        logger = logger_module.get_logger('<run_path>')
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter('%(levelname)s:%(message)s'))
+        old_level, old_propagate = logger.level, logger.propagate
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        self.addCleanup(logger.removeHandler, handler)
+        self.addCleanup(logger.setLevel, old_level)
+        self.addCleanup(setattr, logger, 'propagate', old_propagate)
+
+        with patch.dict(sys.modules, {'framework.logger': logger_module}):
+            # Normal registrations do not carry the critical marker.
+            self.fixtures()
+            self.run_main()
+            self.assertNotIn('[SMS.CRITICAL]', stream.getvalue())
+            stream.seek(0)
+            stream.truncate(0)
+
+            # An isolated factory error is not a catalog failure.
+            self.failed.add('vine_a')
+            self.run_main()
+            self.assertIn('Failed to register Vine DAG', stream.getvalue())
+            self.assertNotIn('[SMS.CRITICAL]', stream.getvalue())
+            self.failed.clear()
+            stream.seek(0)
+            stream.truncate(0)
+
+            # A cross-kind collision is caught even for an unselected DAG.
+            original = self.pipelines / 'vines' / 'another-folder' / 'config.yaml'
+            duplicate = self.config('root', 'duplicate', 'vine_b')
+            self.target = 'vine_a'
+            with self.assertRaisesRegex(ValueError, 'Duplicate DAG ID'):
+                self.run_main()
+            rendered = stream.getvalue()
+            self.assertIn('ERROR:[SMS.CRITICAL] Failed to load pipeline catalog', rendered)
+            self.assertIn('Traceback (most recent call last)', rendered)
+            self.assertIn("Duplicate DAG ID 'vine_b'", rendered)
+            self.assertIn(str(original), rendered)
+            self.assertIn(str(duplicate), rendered)
+
+    def test_same_kind_duplicate_has_critical_marker(self):
+        self.fixtures()
+        self.config('vine', 'duplicate', 'vine_b')
+        with self.assertRaisesRegex(ValueError, 'Duplicate vine ID'):
+            self.run_main()
+        self.logger.exception.assert_called_once_with(
+            '[SMS.CRITICAL] Failed to load pipeline catalog',
+            extra={'event': 'pipeline_catalog_load_failed', 'pipelines_dir': str(self.pipelines)},
+        )
 
     def test_bad_yaml_isolated_and_good_config_retained(self):
         self.fixtures()
