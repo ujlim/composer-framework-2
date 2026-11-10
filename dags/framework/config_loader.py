@@ -72,7 +72,9 @@ class PipelineCatalogLoader:
             for config in configs:
                 by_id[config.id].append((kind, config))
 
-        rejected_paths: set[Path] = set()
+        # A mismatch is an independent error, but its claimed ID still
+        # participates in duplicate detection so it cannot mask a collision.
+        rejected_paths: set[Path] = {item.config_path for item in errors}
         for dag_id, entries in sorted(by_id.items()):
             if len(entries) < 2:
                 continue
@@ -142,6 +144,10 @@ class PipelineCatalogLoader:
             try:
                 data = require_mapping(raw, str(path))
                 require_mapping(data.get(kind), f"{path}: top-level '{kind}'")
+                if ("root" in data and "vine" in data):
+                    raise ValueError(
+                        f"{path}: define exactly one top-level 'root' or 'vine', not both"
+                    )
             except (TypeError, ValueError) as exc:
                 errors.append(
                     PipelineIssue("INVALID_CONFIG_STRUCTURE", kind, path, str(exc))
@@ -171,8 +177,9 @@ class PipelineCatalogLoader:
                         dag_id=dag_id,
                     )
                 )
-                continue
 
+            # Keep valid-ID candidates until global collision detection has
+            # examined them, even when their folder name is incorrect.
             configs.append(LoadedConfig(data=data, source_path=path))
 
         return configs
