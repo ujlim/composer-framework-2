@@ -1,11 +1,8 @@
 """
 Cloud Composer 3 / Apache Airflow DAG entry point.
 
-Auto-discovers:
-- pipelines/roots/*/config.yaml
-- pipelines/vines/*/config.yaml
-
-A broken pipeline is isolated so other DAGs can still be registered.
+Every invalid pipeline is quarantined independently. A duplicate DAG ID
+quarantines *all* conflicting definitions; no file-order winner is selected.
 """
 
 from __future__ import annotations
@@ -13,14 +10,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-# 중요:
-# Airflow DAG discovery safe mode가 이 파일을 DAG 파일로 인식하도록
-# 실제 airflow 모듈을 import합니다.
+# Airflow DAG discovery safe mode requires a real airflow import in this file.
 from airflow.models.dag import DAG
 
 from framework.config_loader import PipelineCatalogLoader
-from framework.logger import get_logger
-from framework.root_factory import RootFactory
+from framework.logger import get_logger, log_event
+from framework.root_factory import RootFactory, UnregisteredVineError
 from framework.vine_factory import VineFactory
 
 
@@ -30,36 +25,50 @@ DAGS_DIR = Path(__file__).resolve().parent
 PIPELINES_DIR = DAGS_DIR / "pipelines"
 
 registered_dag_ids: set[str] = set()
+registered_vine_ids: set[str] = set()
 registration_errors: list[dict[str, Any]] = []
 
 
+class DagRegistrationError(ValueError):
+    """An invalid or duplicate object returned by a DAG factory."""
+
+    def __init__(self, error_code: str, message: str):
+        self.error_code = error_code
+        super().__init__(message)
+
+
 def register_dag(dag: DAG, dag_kind: str, config_path: Path) -> None:
-    """Airflow가 발견할 수 있도록 DAG를 module globals에 등록합니다."""
+    """Expose a DAG at module scope without overwriting framework symbols."""
 
     if not isinstance(dag, DAG):
-        raise TypeError(
-            f"{dag_kind} factory returned an invalid object: "
-            f"expected airflow.models.DAG, got {type(dag)!r}"
+        raise DagRegistrationError(
+            "INVALID_DAG_OBJECT",
+            f"{dag_kind} factory returned an invalid object from {config_path}: "
+            f"expected airflow.models.DAG, got {type(dag)!r}",
         )
 
     if not dag.dag_id:
-        raise ValueError(
-            f"{dag_kind} factory returned a DAG without dag_id: "
-            f"{config_path}"
+        raise DagRegistrationError(
+            "INVALID_DAG_OBJECT",
+            f"{dag_kind} factory returned a DAG without dag_id: {config_path}",
         )
 
     if dag.dag_id in registered_dag_ids:
-        raise ValueError(
-            f"Duplicate DAG ID detected: {dag.dag_id}, "
-            f"config_path={config_path}"
+        raise DagRegistrationError(
+            "DUPLICATE_DAG_ID",
+            f"Duplicate DAG ID during registration: {dag.dag_id}, "
+            f"config_path={config_path}",
         )
 
-    # Airflow DAG parser가 module-level DAG 객체를 발견하도록 등록합니다.
-    globals()[dag.dag_id] = dag
+    # Airflow discovers DAG objects in module globals by value, not by the
+    # Python variable name. Never allow an ID like 'LOGGER' or 'register_dag'
+    # to overwrite a framework global and break all subsequent registration.
+    globals()[f"_pipeline_dag__{dag.dag_id}"] = dag
     registered_dag_ids.add(dag.dag_id)
 
     LOGGER.info(
-        "Registered DAG",
+        "Registered DAG id=%s kind=%s config=%s",
+        dag.dag_id, dag_kind, config_path,
         extra={
             "event": "dag_registered",
             "dag_kind": dag_kind,
@@ -67,6 +76,40 @@ def register_dag(dag: DAG, dag_kind: str, config_path: Path) -> None:
             "config_path": str(config_path),
         },
     )
+    log_event(
+        "dag_registered",
+        dag_kind=dag_kind,
+        dag_id=dag.dag_id,
+        config_path=str(config_path),
+    )
+
+
+def _record_registration_failure(
+    dag_kind: str,
+    config_path: Path,
+    error: Exception,
+    dag_id: str | None = None,
+) -> None:
+    error_code = (
+        error.error_code if isinstance(error, DagRegistrationError)
+        else "ROOT_VINE_NOT_REGISTERED" if isinstance(error, UnregisteredVineError)
+        else "DAG_FACTORY_ERROR"
+    )
+    record = {
+        "error_code": error_code,
+        "dag_kind": dag_kind,
+        "config_path": str(config_path),
+        "dag_id": dag_id,
+        "error": str(error),
+        "related_paths": [],
+    }
+    registration_errors.append(record)
+
+    LOGGER.exception(
+        "[%s] Failed to register %s DAG from %s: %s",
+        error_code, dag_kind, config_path, error,
+    )
+    log_event("dag_registration_failed", **record)
 
 
 if not PIPELINES_DIR.is_dir():
@@ -84,76 +127,63 @@ except Exception:
             "pipelines_dir": str(PIPELINES_DIR),
         },
     )
-    # Catalog 자체를 읽지 못하면 어떤 DAG도 만들 수 없으므로
-    # Airflow Import Error에 원인이 표시되도록 다시 발생시킵니다.
     raise
 
 
-# Vine DAG를 먼저 등록합니다.
+# Config errors must be visible even while healthy DAGs keep registering.
+for issue in catalog.errors:
+    record = issue.as_dict()
+    registration_errors.append(record)
+    LOGGER.error(
+        "[%s] Quarantined %s config=%s id=%s: %s",
+        issue.error_code,
+        issue.dag_kind,
+        issue.config_path,
+        issue.dag_id,
+        issue.error,
+    )
+    log_event("dag_config_rejected", **record)
+
+
+# Register Vine DAGs first, tracking actual successful registrations.
 for vine_config in catalog.vines:
     try:
         vine_dag = VineFactory(vine_config).create()
-
         register_dag(
             dag=vine_dag,
             dag_kind="vine",
             config_path=vine_config.source_path,
         )
-
+        registered_vine_ids.add(vine_dag.dag_id)
     except Exception as exc:
-        registration_errors.append(
-            {
-                "dag_kind": "vine",
-                "config_path": str(vine_config.source_path),
-                "error": repr(exc),
-            }
-        )
-
-        LOGGER.exception(
-            "Failed to register Vine DAG",
-            extra={
-                "event": "dag_registration_failed",
-                "dag_kind": "vine",
-                "config_path": str(vine_config.source_path),
-            },
+        _record_registration_failure(
+            "vine", vine_config.source_path, exc, vine_config.id
         )
 
 
-# Root DAG를 나중에 등록합니다.
+# Root references may point ONLY to Vines that actually registered, not just
+# IDs from YAML files that failed DAG factory validation.
 for root_config in catalog.roots:
     try:
         root_dag = RootFactory(
             root_config,
-            catalog.vine_ids,
+            registered_vine_ids,
         ).create()
-
         register_dag(
             dag=root_dag,
             dag_kind="root",
             config_path=root_config.source_path,
         )
-
     except Exception as exc:
-        registration_errors.append(
-            {
-                "dag_kind": "root",
-                "config_path": str(root_config.source_path),
-                "error": repr(exc),
-            }
-        )
-
-        LOGGER.exception(
-            "Failed to register Root DAG",
-            extra={
-                "event": "dag_registration_failed",
-                "dag_kind": "root",
-                "config_path": str(root_config.source_path),
-            },
+        _record_registration_failure(
+            "root", root_config.source_path, exc, root_config.id
         )
 
 
 LOGGER.info(
-    "DAG registration completed",
+    "DAG registration completed: registered=%s errors=%s",
+    len(registered_dag_ids),
+    len(registration_errors),
     extra={
         "event": "dag_registration_completed",
         "registered_dag_count": len(registered_dag_ids),
@@ -161,30 +191,32 @@ LOGGER.info(
         "registered_dag_ids": sorted(registered_dag_ids),
     },
 )
+log_event(
+    "dag_registration_completed",
+    registered_dag_count=len(registered_dag_ids),
+    registration_error_count=len(registration_errors),
+    registered_dag_ids=sorted(registered_dag_ids),
+    registered_vine_ids=sorted(registered_vine_ids),
+)
 
 
-# 설정 파일은 발견됐는데 모든 DAG 생성이 실패한 경우,
-# 조용히 DAG 0개로 끝내지 않고 Import Error를 발생시킵니다.
-configured_pipeline_count = len(catalog.vines) + len(catalog.roots)
-
-if configured_pipeline_count > 0 and not registered_dag_ids:
-    error_summary = "\n".join(
-        (
-            f"- kind={item['dag_kind']}, "
-            f"config={item['config_path']}, "
-            f"error={item['error']}"
+# Fail loudly only if no DAG was registered. An import-level exception when
+# healthy DAGs exist would defeat the point of per-pipeline isolation.
+if not registered_dag_ids:
+    if registration_errors:
+        lines = [
+            f"- code={item['error_code']}, kind={item['dag_kind']}, "
+            f"config={item['config_path']}, error={item['error']}"
+            for item in registration_errors[:25]
+        ]
+        remaining = len(registration_errors) - len(lines)
+        if remaining:
+            lines.append(f"... and {remaining} additional error(s); see parser logs.")
+        raise RuntimeError(
+            "No DAGs registered; all discovered pipeline configurations were "
+            "rejected or failed to build.\n" + "\n".join(lines)
         )
-        for item in registration_errors
-    )
 
-    raise RuntimeError(
-        "No DAGs were registered although pipeline configurations "
-        f"were discovered.\n{error_summary}"
-    )
-
-
-# 설정 파일 자체가 발견되지 않은 경우도 명확하게 표시합니다.
-if configured_pipeline_count == 0:
     raise RuntimeError(
         "No pipeline configurations were discovered under "
         f"{PIPELINES_DIR}. Expected paths such as "
