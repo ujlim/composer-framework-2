@@ -183,6 +183,8 @@ class MainIsolationTests(unittest.TestCase):
             def create(self):
                 if self.config.data["vine"].get("force_fail"):
                     raise ValueError("synthetic Vine factory error")
+                if self.config.data["vine"].get("force_invalid"):
+                    return object()
                 return FakeDAG(self.config.id)
 
         class FakeRootFactory:
@@ -250,6 +252,48 @@ class MainIsolationTests(unittest.TestCase):
             {item["error_code"] for item in result["registration_errors"]},
             {"DAG_FACTORY_ERROR", "ROOT_VINE_NOT_REGISTERED"},
         )
+
+    def test_invalid_factory_object_is_isolated(self):
+        self.write("vine", "bad", "bad", raw=(
+            "vine:\n  vine_id: bad\n  force_invalid: true\n"
+        ))
+        self.write("vine", "good", "good")
+        result = self.execute()
+        self.assertEqual(result["registered_dag_ids"], {"good"})
+        self.assertEqual(
+            [e["error_code"] for e in result["registration_errors"]],
+            ["INVALID_DAG_OBJECT"],
+        )
+
+    def test_root_factory_error_does_not_block_independent_root(self):
+        self.write("vine", "good", "good")
+        self.write("root", "failed_root", "failed_root", raw=(
+            "root:\n  root_id: failed_root\n  force_fail: true\n"
+        ))
+        self.write("root", "good_root", "good_root", raw=(
+            "root:\n  root_id: good_root\nvines:\n  - vine_id: good\n"
+        ))
+        result = self.execute()
+        self.assertEqual(
+            result["registered_dag_ids"], {"good", "good_root"}
+        )
+        self.assertEqual(
+            [e["error_code"] for e in result["registration_errors"]],
+            ["DAG_FACTORY_ERROR"],
+        )
+
+    def test_json_diagnostics_include_error_code_and_yaml_path(self):
+        self.write("vine", "wrong", "actual")
+        self.write("vine", "good", "good")
+        with self.assertLogs("vine_framework.events", level="INFO") as captured:
+            result = self.execute()
+        self.assertEqual(result["registered_dag_ids"], {"good"})
+        self.assertTrue(any(
+            '"event": "dag_config_rejected"' in line
+            and '"error_code": "FOLDER_ID_MISMATCH"' in line
+            and 'wrong/config.yaml' in line
+            for line in captured.output
+        ))
 
     def test_global_symbol_collision_does_not_overwrite_logger(self):
         self.write("vine", "LOGGER", "LOGGER")
