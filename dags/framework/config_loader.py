@@ -155,9 +155,15 @@ class PipelineCatalogLoader:
                 continue
 
             try:
+                original_id = data[kind].get(f"{kind}_id")
                 dag_id = validate_airflow_id(
-                    data[kind].get(f"{kind}_id"), f"{kind}.{kind}_id"
+                    original_id, f"{kind}.{kind}_id"
                 )
+                if original_id != dag_id:
+                    raise ValueError(
+                        f"{kind}.{kind}_id must not have leading or trailing "
+                        "whitespace; use the exact folder name"
+                    )
             except (TypeError, ValueError) as exc:
                 errors.append(
                     PipelineIssue("INVALID_DAG_ID", kind, path, str(exc))
