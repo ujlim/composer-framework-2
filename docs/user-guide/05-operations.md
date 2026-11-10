@@ -1,10 +1,10 @@
 # 5. 실행 준비와 운영
 
-[목차](README.md) · [이전: Dataflow](04-dataflow.md)
+[목차](README.md) · [이전: Dataflow](04-dataflow.md) · [다음: DAG 설정 검증·오류 격리](06-dag-validation.md)
 
 ## 배포 전 확인
 
-이 저장소는 Composer 3 / Airflow 진입점 [dags/main.py](../../dags/main.py), 프레임워크 코드, YAML·SQL 샘플, 별도 실행 도구를 제공합니다. 이 브랜치에는 전체 Airflow 환경을 설치하는 잠금 파일·배포 자동화·자동 테스트 모음이 없습니다. 실제 Composer의 Python/Airflow/provider 버전에 맞춰 검증해야 합니다.
+이 저장소는 Composer 3 / Airflow 진입점 [dags/main.py](../../dags/main.py), 프레임워크 코드, YAML·SQL 샘플, 별도 실행 도구를 제공합니다. 이 브랜치에는 DAG ID/폴더/오류 격리에 관한 [오프라인 자동 테스트](../../tests/test_dag_validation.py)와 [GitHub Actions 검증](../../.github/workflows/dag-validation.yml)이 있지만, 전체 Airflow/provider 통합 테스트 및 Composer 자동 배포 파이프라인은 제공하지 않습니다. 실제 Composer의 Python/Airflow/provider 버전에 맞춰 검증해야 합니다.
 
 1. `main.py`, `framework/`, `pipelines/`를 같은 DAG 배포 구조로 준비합니다. 설정 파일만 올리고 실행기 코드를 누락하지 마세요.
 2. 환경에 PyYAML, Pendulum과 사용 중인 Airflow standard/google/ssh provider, PostgreSQL 드라이버 `psycopg` 또는 fallback `psycopg2`, Google API·Secret Manager 라이브러리가 있는지 확인합니다. `VineFactory`가 실행기들을 import하므로 아직 쓰지 않는 type의 import 의존성도 DAG 발견에 영향을 줄 수 있습니다.
@@ -12,7 +12,7 @@
 4. SQL·스키마 참조가 해당 Vine 폴더 안의 실제 파일을 가리키는지 확인합니다. 스케줄 없는 Vine만 단독 배포해 테스트할 수도 있습니다.
 5. Airflow Connection, Pool, Triggerer, IAM, 네트워크, 버킷/BigQuery 리전, Runner와 Flex Template를 먼저 준비합니다. YAML이 이 자원을 생성하지는 않습니다.
 6. 샘플의 프로젝트·버킷·SA·Connection·DB 주소를 환경별 값으로 교체합니다. 기존 샘플에는 실제 환경을 가정한 이름이 있으므로 그대로 실행하지 마세요.
-7. Cloud Composer DAG import 오류, `dag_registered`, `dag_registration_failed` 로그를 확인합니다. Graph의 의존성과 Rendered Templates를 검토합니다.
+7. Cloud Composer DAG Import Errors와 DAG Processor의 `dag_config_rejected`, `dag_registered`, `dag_registration_failed`, `dag_registration_completed` 로그를 확인합니다. 오류별 상세 대응은 [DAG 설정 검증·오류 격리 가이드](06-dag-validation.md)를 참고합니다. Graph의 의존성과 Rendered Templates를 검토합니다.
 8. 테스트 전용 출력 경로에서 수동 `business_date`를 지정해 결과·행 수·FIN·재실행을 검증하고, 마지막에 Root 스케줄을 활성화합니다.
 
 `deferrable: true`는 BigQuery, Root trigger, FIN sensor에서 사용합니다. 관련 provider와 Triggerer가 없으면 설정만으로 동작하지 않습니다. Dataflow JDBC는 자체 polling operator이며 deferrable 옵션을 읽지 않습니다.
@@ -56,7 +56,7 @@
 
 | 증상 | 우선 확인 | 해석·다음 단계 |
 |---|---|---|
-| DAG가 안 보임 | main import, 탐색 경로, YAML 오류 로그 | 파일 단위 로드/Factory 오류는 다른 DAG와 격리되지만 catalog 중복 ID·import 오류 등은 전체를 막을 수 있음 |
+| DAG가 안 보임 | main import, 탐색 경로, YAML 오류 로그 | 설정 중복 ID·폴더 불일치·파싱/Factory 오류는 해당 설정만 격리됨. 공통 Python import 실패·정상 DAG 0개면 파일 수준 Import Error. [오류별 로그/대응](06-dag-validation.md) 참조 |
 | Root는 보이는데 Vine 실행 불가 | 해당 Vine 등록 로그와 DAG pause 상태 | catalog 존재 검사만 통과하고 Vine Factory 생성은 실패했을 수 있음 |
 | business_date required | scheduled 여부, conf/params 값 | 수동 실행 날짜 입력. 비정기 run에 오늘 날짜 자동 사용 없음 |
 | unknown ID / cycle | depends_on 이름과 ID 중복 | 목록 순서가 아니라 ID 그래프 수정 |

@@ -18,6 +18,18 @@ from framework.models import LoadedConfig
 from framework.utils import require_list, require_mapping, validate_airflow_id, validate_dependency_graph
 
 
+class UnregisteredVineError(ValueError):
+    """Raised when a Root targets a Vine not successfully registered."""
+
+    def __init__(self, root_id: str, vine_id: str):
+        self.root_id = root_id
+        self.vine_id = vine_id
+        super().__init__(
+            f"Root '{root_id}' references Vine '{vine_id}' which is not "
+            "registered; check rejected YAML / Vine factory diagnostics."
+        )
+
+
 class RootFactory:
     """Creates a scheduled Root DAG that triggers and waits for Vine DAGs."""
 
@@ -44,7 +56,7 @@ class RootFactory:
             require_mapping(item, f"{root_id}.vine")
             vine_id = validate_airflow_id(item.get("vine_id"), "vine.vine_id")
             if vine_id not in self.available_vine_ids:
-                raise ValueError(f"Root '{root_id}' references unregistered Vine '{vine_id}'")
+                raise UnregisteredVineError(root_id, vine_id)
             vine_ids.append(vine_id)
             parents = item.get("depends_on", [])
             if not isinstance(parents, list) or not all(isinstance(x, str) for x in parents):

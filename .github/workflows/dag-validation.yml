@@ -1,0 +1,37 @@
+name: DAG validation isolation tests
+
+on:
+  push:
+    branches:
+      - 'feature/26.1110.dag-validation-test'
+    paths:
+      - 'dags/main.py'
+      - 'dags/framework/config_loader.py'
+      - 'dags/framework/root_factory.py'
+      - 'dags/framework/models.py'
+      - 'dags/framework/utils.py'
+      - 'tests/test_dag_validation.py'
+      - '.github/workflows/dag-validation.yml'
+  pull_request:
+    paths:
+      - 'dags/main.py'
+      - 'dags/framework/config_loader.py'
+      - 'dags/framework/root_factory.py'
+      - 'tests/test_dag_validation.py'
+
+jobs:
+  offline-dag-validation:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install only offline YAML dependency
+        run: python -m pip install --disable-pip-version-check PyYAML
+      - name: Compile changed Python modules
+        run: python -m py_compile dags/main.py dags/framework/config_loader.py dags/framework/root_factory.py tests/test_dag_validation.py
+      - name: Run DAG isolation and catalog tests
+        run: python -m unittest discover -s tests -p 'test_dag_validation.py' -v
