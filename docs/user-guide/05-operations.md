@@ -1,6 +1,6 @@
 # 5. 실행 준비와 운영
 
-[목차](README.md) · [이전: Dataflow](04-dataflow.md)
+[목차](README.md) · [이전: Dataflow](04-dataflow.md) · [다음: DAG 설정 검증·오류 격리](06-dag-validation.md)
 
 ## 배포 전 확인
 
@@ -12,7 +12,7 @@
 4. SQL·스키마 참조가 해당 Vine 폴더 안의 실제 파일을 가리키는지 확인합니다. 스케줄 없는 Vine만 단독 배포해 테스트할 수도 있습니다.
 5. Airflow Connection, Pool, Triggerer, IAM, 네트워크, 버킷/BigQuery 리전, Runner와 Flex Template를 먼저 준비합니다. YAML이 이 자원을 생성하지는 않습니다.
 6. 샘플의 프로젝트·버킷·SA·Connection·DB 주소를 환경별 값으로 교체합니다. 기존 샘플에는 실제 환경을 가정한 이름이 있으므로 그대로 실행하지 마세요.
-7. Cloud Composer DAG import 오류, `dag_registered`, `dag_registration_failed` 로그를 확인합니다. Graph의 의존성과 Rendered Templates를 검토합니다.
+7. Cloud Composer DAG Import Errors와 DAG Processor의 `dag_config_rejected`, `dag_registered`, `dag_registration_failed`, `dag_registration_completed` 로그를 확인합니다. 오류별 상세 대응은 [DAG 설정 검증·오류 격리 가이드](06-dag-validation.md)를 참고합니다. Graph의 의존성과 Rendered Templates를 검토합니다.
 8. 테스트 전용 출력 경로에서 수동 `business_date`를 지정해 결과·행 수·FIN·재실행을 검증하고, 마지막에 Root 스케줄을 활성화합니다.
 
 `deferrable: true`는 BigQuery, Root trigger, FIN sensor에서 사용합니다. 관련 provider와 Triggerer가 없으면 설정만으로 동작하지 않습니다. Dataflow JDBC는 자체 polling operator이며 deferrable 옵션을 읽지 않습니다.
@@ -56,7 +56,7 @@
 
 | 증상 | 우선 확인 | 해석·다음 단계 |
 |---|---|---|
-| DAG가 안 보임 | main import, 탐색 경로, YAML 오류 로그 | 파일 단위 로드/Factory 오류는 다른 DAG와 격리되지만 catalog 중복 ID·import 오류 등은 전체를 막을 수 있음 |
+| DAG가 안 보임 | main import, 탐색 경로, YAML 오류 로그 | 설정 중복 ID·폴더 불일치·파싱/Factory 오류는 해당 설정만 격리됨. 공통 Python import 실패·정상 DAG 0개면 파일 수준 Import Error. [오류별 로그/대응](06-dag-validation.md) 참조 |
 | Root는 보이는데 Vine 실행 불가 | 해당 Vine 등록 로그와 DAG pause 상태 | catalog 존재 검사만 통과하고 Vine Factory 생성은 실패했을 수 있음 |
 | business_date required | scheduled 여부, conf/params 값 | 수동 실행 날짜 입력. 비정기 run에 오늘 날짜 자동 사용 없음 |
 | unknown ID / cycle | depends_on 이름과 ID 중복 | 목록 순서가 아니라 ID 그래프 수정 |
