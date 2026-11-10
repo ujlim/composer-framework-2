@@ -114,6 +114,15 @@ class CatalogIsolationTests(unittest.TestCase):
             {"INVALID_DAG_ID", "INVALID_CONFIG_STRUCTURE"},
         )
 
+    def test_leading_or_trailing_id_whitespace_is_invalid(self):
+        write_config(self.base, "vine", "a", "", raw=(
+            "vine:\n  vine_id: ' a'\n"
+        ))
+        write_config(self.base, "vine", "good", "good")
+        result = self.load()
+        self.assertEqual([c.id for c in result.vines], ["good"])
+        self.assertEqual([x.error_code for x in result.errors], ["INVALID_DAG_ID"])
+
     def test_both_sections_and_non_dict_are_rejected(self):
         write_config(
             self.base, "vine", "both", "",
