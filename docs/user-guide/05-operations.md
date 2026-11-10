@@ -4,7 +4,7 @@
 
 ## 배포 전 확인
 
-이 저장소는 Composer 3 / Airflow 진입점 [dags/main.py](../../dags/main.py), 프레임워크 코드, YAML·SQL 샘플, 별도 실행 도구를 제공합니다. 이 브랜치에는 전체 Airflow 환경을 설치하는 잠금 파일·배포 자동화·자동 테스트 모음이 없습니다. 실제 Composer의 Python/Airflow/provider 버전에 맞춰 검증해야 합니다.
+이 저장소는 Composer 3 / Airflow 진입점 [dags/main.py](../../dags/main.py), 프레임워크 코드, YAML·SQL 샘플, 별도 실행 도구를 제공합니다. 이 브랜치에는 DAG ID/폴더/오류 격리에 관한 [오프라인 자동 테스트](../../tests/test_dag_validation.py)와 [GitHub Actions 검증](../../.github/workflows/dag-validation.yml)이 있지만, 전체 Airflow/provider 통합 테스트 및 Composer 자동 배포 파이프라인은 제공하지 않습니다. 실제 Composer의 Python/Airflow/provider 버전에 맞춰 검증해야 합니다.
 
 1. `main.py`, `framework/`, `pipelines/`를 같은 DAG 배포 구조로 준비합니다. 설정 파일만 올리고 실행기 코드를 누락하지 마세요.
 2. 환경에 PyYAML, Pendulum과 사용 중인 Airflow standard/google/ssh provider, PostgreSQL 드라이버 `psycopg` 또는 fallback `psycopg2`, Google API·Secret Manager 라이브러리가 있는지 확인합니다. `VineFactory`가 실행기들을 import하므로 아직 쓰지 않는 type의 import 의존성도 DAG 발견에 영향을 줄 수 있습니다.
