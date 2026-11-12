@@ -12,6 +12,8 @@ import yaml
 from framework.models import LoadedConfig
 from framework.utils import require_mapping
 
+_YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -53,7 +55,7 @@ class PipelineCatalogLoader:
         for path in sorted(group_dir.glob("*/config.yaml")):
             try:
                 with path.open("r", encoding="utf-8") as stream:
-                    raw = yaml.safe_load(stream) or {}
+                    raw = yaml.load(stream, Loader=_YAML_LOADER) or {}
                 data = require_mapping(raw, str(path))
                 if expected_key not in data:
                     raise ValueError(f"Top-level '{expected_key}' section is required")
