@@ -18,6 +18,12 @@ from typing import Any
 # 실제 airflow 모듈을 import합니다.
 from airflow.models.dag import DAG
 
+# Airflow 3: task startup parses only the requested DAG.
+try:
+    from airflow.sdk import get_parsing_context
+except ImportError:
+    from airflow.utils.dag_parsing_context import get_parsing_context
+
 from framework.config_loader import PipelineCatalogLoader
 from framework.logger import get_logger
 from framework.root_factory import RootFactory
@@ -89,8 +95,22 @@ except Exception:
     raise
 
 
+# During task execution Airflow supplies the requested dag_id.
+# The DAG processor supplies None to discover all DAGs.
+target_dag_id = get_parsing_context().dag_id
+vines_to_build, roots_to_build = catalog.vines, catalog.roots
+
+if target_dag_id:
+    selected_vines = [c for c in catalog.vines if c.id == target_dag_id]
+    selected_roots = [c for c in catalog.roots if c.id == target_dag_id]
+    if selected_vines or selected_roots:
+        vines_to_build, roots_to_build = selected_vines, selected_roots
+    # Developer version: if target is absent, falls back to all DAGs.
+    # This is retained for fidelity; review before production use.
+
+
 # Vine DAG를 먼저 등록합니다.
-for vine_config in catalog.vines:
+for vine_config in vines_to_build:
     try:
         vine_dag = VineFactory(vine_config).create()
 
@@ -120,7 +140,7 @@ for vine_config in catalog.vines:
 
 
 # Root DAG를 나중에 등록합니다.
-for root_config in catalog.roots:
+for root_config in roots_to_build:
     try:
         root_dag = RootFactory(
             root_config,
