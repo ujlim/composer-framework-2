@@ -4,9 +4,9 @@
 
 ## 배포 전 확인
 
-이 저장소는 Composer 3 / Airflow 진입점 [main_roots.py](../../dags/main_roots.py)와 [main_vines.py](../../dags/main_vines.py), 프레임워크 코드, YAML·SQL 샘플, 별도 실행 도구를 제공합니다. 이 브랜치에는 전체 Airflow 환경을 설치하는 잠금 파일·Composer 배포 자동화는 없습니다. 로컬 회귀 테스트는 실제 환경 테스트를 대신하지 않습니다. 실제 Composer의 Python/Airflow/provider 버전에 맞춰 검증해야 합니다.
+이 저장소는 Composer 3 / Airflow 진입점 [main_roots.py](../../dags/main_roots.py)와 [Vine 샤드 8개](../root-vine-entrypoints.md), 프레임워크 코드, YAML·SQL 샘플, 별도 실행 도구를 제공합니다. 이 브랜치에는 전체 Airflow 환경을 설치하는 잠금 파일·Composer 배포 자동화는 없습니다. 로컬 회귀 테스트는 실제 환경 테스트를 대신하지 않습니다. 실제 Composer의 Python/Airflow/provider 버전에 맞춰 검증해야 합니다.
 
-1. `main_roots.py`, `main_vines.py`, `framework/`, `pipelines/`를 같은 DAG 배포 구조로 준비합니다. 기존 `main.py`와 새 진입점을 함께 두지 마세요. 교체 및 복구는 [진입점 분리 가이드](../root-vine-entrypoints.md)를 따릅니다.
+1. `main_roots.py`, `main_vines_00.py`~`main_vines_07.py`, `framework/`, `pipelines/`를 같은 DAG 배포 구조로 준비합니다. 기존 `main.py` 또는 `main_vines.py`를 새 진입점과 함께 두지 마세요. 교체 및 복구는 [진입점 분리 가이드](../root-vine-entrypoints.md)를 따릅니다.
 2. 환경에 PyYAML, Pendulum과 사용 중인 Airflow standard/google/ssh provider, PostgreSQL 드라이버 `psycopg` 또는 fallback `psycopg2`, Google API·Secret Manager 라이브러리가 있는지 확인합니다. `VineFactory`가 실행기들을 import하므로 아직 쓰지 않는 type의 import 의존성도 DAG 발견에 영향을 줄 수 있습니다.
 3. 모든 `root_id`/`vine_id`가 전역 고유하고 Grape ID/trigger ID가 자동 task ID와 충돌하지 않는지 확인합니다.
 4. SQL·스키마 참조가 해당 Vine 폴더 안의 실제 파일을 가리키는지 확인합니다. 스케줄 없는 Vine만 단독 배포해 테스트할 수도 있습니다.

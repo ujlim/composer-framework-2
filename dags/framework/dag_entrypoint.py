@@ -1,7 +1,12 @@
-"""Shared registration and parsing-context logic for the two DAG entrypoints."""
+# Author: LIM UI JIN
+# Created: 2026-11-24
+# Updated: 2026-11-24 (Vine SHA-256 shards)
+
+"""Shared registration and parsing-context logic for Root and Vine entrypoints."""
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -16,6 +21,16 @@ from framework.logger import get_logger
 from framework.models import LoadedConfig
 
 Kind = Literal["root", "vine"]
+
+# Part of the deployment/file-location contract. Changing this number moves DAGs
+# between files and requires an explicit migration of the whole shard set.
+VINE_SHARD_COUNT = 8
+
+
+def vine_shard_for(dag_id: str) -> int:
+    """Stable owner: first 64 bits of SHA-256 over the canonical UTF-8 DAG ID."""
+    digest = hashlib.sha256(dag_id.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % VINE_SHARD_COUNT
 
 
 def _factory_id(config: LoadedConfig, kind: Kind) -> str | None:
@@ -43,10 +58,31 @@ def load_dags(
     module_name: str,
     kind: Kind,
     dag_class: type,
-    factory: Callable[..., Any],
+    factory: Callable[..., Any] | None = None,
+    *,
+    vine_shard: int | None = None,
 ) -> dict[str, Any]:
     """Return the DAG globals owned by exactly one entrypoint file."""
     logger: logging.Logger = get_logger(module_name)
+    if kind == "vine":
+        if vine_shard is None:
+            raise ValueError("Unsharded Vine entrypoint is incompatible; remove main_vines.py")
+        if not 0 <= vine_shard < VINE_SHARD_COUNT:
+            raise ValueError(f"Invalid Vine shard: {vine_shard!r}")
+    elif vine_shard is not None:
+        raise ValueError("Root entrypoint cannot declare a Vine shard")
+
+    target = get_parsing_context().dag_id
+    shard_fields = {} if vine_shard is None else {"vine_shard": vine_shard}
+    if target and vine_shard is not None and vine_shard_for(target) != vine_shard:
+        # This file cannot own the requested DAG, regardless of catalog contents.
+        # Avoid discovery/YAML work as well as Factory work on this path.
+        logger.info(
+            "Vine shard does not own the worker parsing target",
+            extra={"event": "dag_shard_target_skipped", "dag_id": target, **shard_fields},
+        )
+        return {}
+
     pipelines_dir = entrypoint.resolve().parent / "pipelines"
     if not pipelines_dir.is_dir():
         raise FileNotFoundError(f"Pipelines directory does not exist: {pipelines_dir}")
@@ -63,6 +99,7 @@ def load_dags(
                 "event": "pipeline_catalog_load_failed",
                 "dag_kind": kind,
                 "pipelines_dir": str(pipelines_dir),
+                **shard_fields,
             },
         )
         raise
@@ -75,27 +112,44 @@ def load_dags(
             "'pipelines/roots/*/config.yaml'."
         )
 
-    target = get_parsing_context().dag_id
     own_configs, other_configs = (
         (catalog.roots, catalog.vines) if kind == "root" else (catalog.vines, catalog.roots)
     )
     other_kind: Kind = "vine" if kind == "root" else "root"
-    configs = own_configs
-    if target:
-        selected = [item for item in own_configs if _factory_id(item, kind) == target]
-        if selected or any(_factory_id(item, other_kind) == target for item in other_configs):
-            configs = selected
-        # Preserve the developer version's global-unknown fallback, but build
-        # only this file's DAGs. A known target in the other file builds none.
+    selected = [item for item in own_configs if _factory_id(item, kind) == target] if target else []
+    if selected or (target and any(_factory_id(item, other_kind) == target for item in other_configs)):
+        # Skip full shard assignment when the worker target is known.
+        configs = selected
+    elif vine_shard is not None:
+        configs = [
+            item for item in own_configs
+            # Let the owning factory report malformed IDs too, rather than
+            # silently dropping a parsed YAML that cannot declare a real DAG.
+            if vine_shard_for(_factory_id(item, "vine") or item.id.strip()) == vine_shard
+        ]
+    else:
+        configs = own_configs
+    # Compatibility: an unknown target falls back within its computed shard
+    # (or all Roots). A known target in the other kind builds none.
 
     dags: dict[str, Any] = {}
     errors: list[str] = []
-    vine_ids = catalog.vine_ids if kind == "root" and configs else None
+    if configs:
+        if kind == "root":
+            if factory is None:
+                from framework.root_factory import RootFactory
+                factory = RootFactory
+            factory_args = (catalog.vine_ids,)
+        else:
+            if factory is None:
+                from framework.vine_factory import VineFactory
+                factory = VineFactory
+            factory_args = ()
     for config in configs:
         config_path = str(config.source_path)
-        fields = {"dag_kind": kind, "config_path": config_path}
+        fields = {"dag_kind": kind, "config_path": config_path, **shard_fields}
         try:
-            builder = factory(config, vine_ids) if kind == "root" else factory(config)
+            builder = factory(config, *factory_args)
             dag = builder.create()
             if not isinstance(dag, dag_class):
                 raise TypeError(f"{kind} factory returned a non-DAG object: {type(dag)!r}")
@@ -123,6 +177,7 @@ def load_dags(
             "registered_dag_count": len(dags),
             "registration_error_count": len(errors),
             "registered_dag_ids": sorted(dags),
+            **shard_fields,
         },
     )
 

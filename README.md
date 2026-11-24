@@ -12,4 +12,4 @@ for behavior, explicit overrides, deployment checks and rollback guidance.
 
 ## Composer DAG 진입점
 
-[Root/Vine 진입점 분리 및 교체 가이드](docs/root-vine-entrypoints.md): 진입점, 검증 기준 및 롤백.
+[Root/Vine 해시 샤드 및 교체 가이드](docs/root-vine-entrypoints.md): 진입점, 검증 기준 및 롤백.

@@ -1,3 +1,7 @@
+# Author: LIM UI JIN
+# Created: 2026-11-24
+# Updated: 2026-11-24 (Vine shard rollout; Root remains one file)
+
 """Airflow discovery entrypoint for Root DAGs (including scheduled Roots)."""
 
 from pathlib import Path

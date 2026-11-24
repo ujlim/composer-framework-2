@@ -1,4 +1,8 @@
-"""Exercise both actual entrypoint files with real YAML/factories and offline Airflow doubles."""
+# Author: LIM UI JIN
+# Created: 2026-11-24
+# Updated: 2026-11-24 (Vine shard regression coverage)
+
+"""Exercise real YAML/factories and entrypoint files with offline Airflow doubles."""
 
 from __future__ import annotations
 
@@ -18,6 +22,7 @@ from test_runtime_options import DAG, Operator, _runtime_modules
 
 
 DAGS_DIR = Path(__file__).resolve().parents[1] / "dags"
+VINE_FILES = tuple(f"main_vines_{idx:02d}.py" for idx in range(8))
 
 
 class EntryPointTests(unittest.TestCase):
@@ -28,7 +33,7 @@ class EntryPointTests(unittest.TestCase):
         self.pipelines = self.dags / "pipelines"
         (self.pipelines / "roots").mkdir(parents=True)
         (self.pipelines / "vines").mkdir()
-        for name in ("main_roots.py", "main_vines.py"):
+        for name in ("main_roots.py", *VINE_FILES):
             shutil.copyfile(DAGS_DIR / name, self.dags / name)
 
         module_patch = patch.dict(sys.modules, {})
@@ -45,6 +50,7 @@ class EntryPointTests(unittest.TestCase):
         self._module("airflow.sdk").get_parsing_context = self._context
         self._module("airflow.hooks.base").BaseHook = object
         self._module("airflow.providers.google.cloud.hooks.gcs").GCSHook = object
+        self._module("airflow.providers.ssh.operators.ssh").SSHOperator = Operator
 
     @staticmethod
     def _module(name):
@@ -92,9 +98,19 @@ class EntryPointTests(unittest.TestCase):
         (path.parent / "sample.sql").write_text("SELECT 1;\n", encoding="utf-8")
         return path
 
-    def run_entry(self, kind):
-        result = runpy.run_path(str(self.dags / f"main_{kind}s.py"))
+    def run_file(self, name):
+        result = runpy.run_path(str(self.dags / name))
         return {dag.dag_id: dag for dag in result.values() if isinstance(dag, DAG)}
+
+    def run_entry(self, kind):
+        if kind == "root":
+            return self.run_file("main_roots.py")
+        dags = {}
+        for name in VINE_FILES:
+            new = self.run_file(name)
+            self.assertTrue(dags.keys().isdisjoint(new), f"Duplicate DAG in {name}")
+            dags.update(new)
+        return dags
 
     def run_with_factory_counts(self, target):
         self.target = target
@@ -140,7 +156,7 @@ class EntryPointTests(unittest.TestCase):
         for target, roots, vines, counts in [
             ("root-b", {"root-b"}, set(), (1, 0)),
             ("vine-a", set(), {"vine-a"}, (0, 1)),
-            ("absent", {"root-a", "root-b"}, {"vine-a", "vine-b"}, (2, 2)),
+            ("test-absent-5", {"root-a", "root-b"}, {"vine-a"}, (2, 1)),
         ]:
             with self.subTest(target=target):
                 actual_roots, actual_vines, actual_counts = self.run_with_factory_counts(target)
@@ -175,11 +191,12 @@ class EntryPointTests(unittest.TestCase):
 
     def test_factory_error_isolated_and_empty_root_is_allowed(self):
         self.vine("vine-good")
-        self.vine("vine-broken", broken=True)
+        # vine-good and this malformed fixture hash to shard 02.
+        self.vine("bad-vine-2", broken=True)
         self.assertEqual(self.run_entry("root"), {})
         with self.assertLogs("vine_framework", level="ERROR"):
             self.assertEqual(set(self.run_entry("vine")), {"vine-good"})
-        self.target = "vine-broken"
+        self.target = "bad-vine-2"
         with self.assertLogs("vine_framework", level="ERROR"):
             with self.assertRaisesRegex(RuntimeError, "No DAGs were registered"):
                 self.run_entry("vine")
@@ -188,8 +205,8 @@ class EntryPointTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "No pipeline configurations were discovered"):
             self.run_entry("vine")
         self.vine("__file__")
-        result = runpy.run_path(str(self.dags / "main_vines.py"))
-        self.assertEqual(result["__file__"], str(self.dags / "main_vines.py"))
+        result = runpy.run_path(str(self.dags / "main_vines_03.py"))
+        self.assertEqual(result["__file__"], str(self.dags / "main_vines_03.py"))
         self.assertEqual(result["_pipeline_dag___file__"].dag_id, "__file__")
 
     def test_1029_pipeline_discovery_and_worker_boundary(self):
@@ -199,11 +216,27 @@ class EntryPointTests(unittest.TestCase):
             self.vine(f"vine-{index:04}")
         for index in range(29):
             self.root(f"root-{index:03}", [{"vine_id": f"vine-{index:04}"}])
-        with patch.object(yaml, "load", wraps=yaml.load) as yaml_reads:
-            roots, vines, counts = self.run_with_factory_counts(None)
-        self.assertEqual(counts, (29, 1000))
-        self.assertEqual(len(set(roots) | set(vines)), 1029)
-        self.assertEqual(yaml_reads.call_count, 2 * 1029)
+        vines = set()
+        counts = []
+        vine_module = importlib.import_module("framework.vine_factory")
+        with (
+            patch.object(yaml, "load", wraps=yaml.load) as yaml_reads,
+            patch.object(vine_module, "VineFactory", wraps=vine_module.VineFactory) as factory,
+        ):
+            roots = self.run_entry("root")
+            factory.assert_not_called()
+            for name in VINE_FILES:
+                before = factory.call_count
+                dags = self.run_file(name)
+                counts.append(factory.call_count - before)
+                self.assertEqual(counts[-1], len(dags))
+                self.assertTrue(vines.isdisjoint(dags))
+                vines.update(dags)
+        self.assertEqual(len(roots), 29)
+        self.assertEqual(sum(counts), 1000)
+        self.assertLess(max(counts), 150)
+        self.assertEqual(len(set(roots) | vines), 1029)
+        self.assertEqual(yaml_reads.call_count, 9 * 1029)
 
         # On task startup Airflow imports the owning file, not both files.
         self.target = "root-017"
@@ -211,8 +244,58 @@ class EntryPointTests(unittest.TestCase):
             self.assertEqual(set(self.run_entry("root")), {"root-017"})
         self.assertEqual(yaml_reads.call_count, 1029)
 
-    def test_old_main_is_not_a_third_entrypoint(self):
-        self.assertFalse((DAGS_DIR / "main.py").exists())
+    def test_only_nine_entrypoint_files_exist(self):
+        self.assertEqual(
+            {path.name for path in DAGS_DIR.glob("main*.py")},
+            {"main_roots.py", *VINE_FILES},
+        )
+
+    def test_stable_hash_uses_dag_id_not_folder_order_or_python_hash(self):
+        self.setup_two_kinds()
+        self.vine(" dimension.sales ", folder="different-folder")
+        observed = {name: set(self.run_file(name)) for name in reversed(VINE_FILES)}
+        self.assertEqual(observed["main_vines_01.py"], {"dimension.sales"})
+        self.assertEqual(observed["main_vines_02.py"], {"vine-a"})
+        self.assertEqual(observed["main_vines_03.py"], {"vine-b"})
+        self.assertEqual(sum(map(len, observed.values())), 3)
+        self.vine("new_source_01")
+        after = {name: set(self.run_file(name)) for name in VINE_FILES}
+        self.assertEqual({name: ids - {"new_source_01"} for name, ids in after.items()}, observed)
+
+    def test_worker_non_owning_shard_performs_no_yaml_reads_or_factory_import(self):
+        self.setup_two_kinds()
+        self.target = "vine-a"
+        with patch.object(yaml, "load", wraps=yaml.load) as yaml_reads:
+            self.assertEqual(self.run_file("main_vines_03.py"), {})
+        yaml_reads.assert_not_called()
+        self.assertNotIn("framework.vine_factory", sys.modules)
+        with patch.object(yaml, "load", wraps=yaml.load) as yaml_reads:
+            self.assertEqual(set(self.run_entry("vine")), {"vine-a"})
+        self.assertEqual(yaml_reads.call_count, 4)
+
+    def test_all_failure_in_a_shard_does_not_block_a_different_shard(self):
+        self.vine("vine-good")  # shard 02
+        self.vine("vine-broken", broken=True)  # shard 01
+        with self.assertLogs("vine_framework", level="ERROR"):
+            with self.assertRaisesRegex(RuntimeError, "No DAGs were registered"):
+                self.run_file("main_vines_01.py")
+        self.assertEqual(set(self.run_file("main_vines_02.py")), {"vine-good"})
+
+
+    def test_unsharded_vine_entrypoint_cannot_register_with_new_helper(self):
+        self.vine("vine-a")
+        legacy = self.dags / "main_vines.py"
+        legacy.write_text(
+            "from pathlib import Path\nfrom airflow.models.dag import DAG\n"
+            "from framework.dag_entrypoint import load_dags\n"
+            "from framework.vine_factory import VineFactory\n"
+            "globals().update(load_dags(Path(__file__), __name__, 'vine', DAG, VineFactory))\n",
+            encoding="utf-8",
+        )
+        with patch.object(yaml, "load", wraps=yaml.load) as yaml_reads:
+            with self.assertRaisesRegex(ValueError, "remove main_vines.py"):
+                self.run_file(legacy.name)
+        yaml_reads.assert_not_called()
 
     def test_legacy_parsing_context_import_fallback(self):
         self.vine("vine-a")
