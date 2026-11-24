@@ -4,9 +4,9 @@
 
 ## 배포 전 확인
 
-이 저장소는 Composer 3 / Airflow 진입점 [dags/main.py](../../dags/main.py), 프레임워크 코드, YAML·SQL 샘플, 별도 실행 도구를 제공합니다. 이 브랜치에는 전체 Airflow 환경을 설치하는 잠금 파일·배포 자동화·자동 테스트 모음이 없습니다. 실제 Composer의 Python/Airflow/provider 버전에 맞춰 검증해야 합니다.
+이 저장소는 Composer 3 / Airflow 진입점 [main_roots.py](../../dags/main_roots.py)와 [main_vines.py](../../dags/main_vines.py), 프레임워크 코드, YAML·SQL 샘플, 별도 실행 도구를 제공합니다. 이 브랜치에는 전체 Airflow 환경을 설치하는 잠금 파일·Composer 배포 자동화는 없습니다. 로컬 회귀 테스트는 실제 환경 테스트를 대신하지 않습니다. 실제 Composer의 Python/Airflow/provider 버전에 맞춰 검증해야 합니다.
 
-1. `main.py`, `framework/`, `pipelines/`를 같은 DAG 배포 구조로 준비합니다. 설정 파일만 올리고 실행기 코드를 누락하지 마세요.
+1. `main_roots.py`, `main_vines.py`, `framework/`, `pipelines/`를 같은 DAG 배포 구조로 준비합니다. 기존 `main.py`와 새 진입점을 함께 두지 마세요. 교체 및 복구는 [진입점 분리 가이드](../root-vine-entrypoints.md)를 따릅니다.
 2. 환경에 PyYAML, Pendulum과 사용 중인 Airflow standard/google/ssh provider, PostgreSQL 드라이버 `psycopg` 또는 fallback `psycopg2`, Google API·Secret Manager 라이브러리가 있는지 확인합니다. `VineFactory`가 실행기들을 import하므로 아직 쓰지 않는 type의 import 의존성도 DAG 발견에 영향을 줄 수 있습니다.
 3. 모든 `root_id`/`vine_id`가 전역 고유하고 Grape ID/trigger ID가 자동 task ID와 충돌하지 않는지 확인합니다.
 4. SQL·스키마 참조가 해당 Vine 폴더 안의 실제 파일을 가리키는지 확인합니다. 스케줄 없는 Vine만 단독 배포해 테스트할 수도 있습니다.
@@ -50,13 +50,13 @@
 
 ## 로그와 장애 대응
 
-[logger.py](../../dags/framework/logger.py)는 `vine_framework.*` logger로 JSON 이벤트를 기록합니다. task_success/task_failure에는 DAG/task/run/시도 수, 성공 시 duration, 실패 시 exception과 log_url이 포함됩니다. DAG 성공/실패 이벤트, 실행기별 완료 이벤트, main의 등록 로그도 확인하세요.
+[logger.py](../../dags/framework/logger.py)는 `vine_framework.*` logger로 JSON 이벤트를 기록합니다. task_success/task_failure에는 DAG/task/run/시도 수, 성공 시 duration, 실패 시 exception과 log_url이 포함됩니다. DAG 성공/실패 이벤트, 실행기별 완료 이벤트, 각 진입점의 등록 로그도 확인하세요.
 
 키 이름에 password/secret/token/private_key/credential이 포함된 dict 값은 마스킹하지만 **임의 문자열 안의 비밀, SQL 결과, 예외 메시지 전체를 정교하게 정제하는 기능은 아닙니다**. 민감한 쿼리 결과를 로그/XCom으로 출력하지 않도록 fetch·테스트 사용을 제한하세요.
 
 | 증상 | 우선 확인 | 해석·다음 단계 |
 |---|---|---|
-| DAG가 안 보임 | main import, 탐색 경로, YAML 오류 로그 | 파일 단위 로드/Factory 오류는 다른 DAG와 격리되지만 catalog 중복 ID·import 오류 등은 전체를 막을 수 있음 |
+| DAG가 안 보임 | 진입점 import, 탐색 경로, YAML 오류 로그 | 파일 단위 로드/Factory 오류는 다른 DAG와 격리되지만 catalog 중복 ID·import 오류 등은 전체를 막을 수 있음 |
 | Root는 보이는데 Vine 실행 불가 | 해당 Vine 등록 로그와 DAG pause 상태 | catalog 존재 검사만 통과하고 Vine Factory 생성은 실패했을 수 있음 |
 | business_date required | scheduled 여부, conf/params 값 | 수동 실행 날짜 입력. 비정기 run에 오늘 날짜 자동 사용 없음 |
 | unknown ID / cycle | depends_on 이름과 ID 중복 | 목록 순서가 아니라 ID 그래프 수정 |

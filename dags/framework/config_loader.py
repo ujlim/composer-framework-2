@@ -61,7 +61,7 @@ class PipelineCatalogLoader:
                     raise ValueError(f"Top-level '{expected_key}' section is required")
                 configs.append(LoadedConfig(data=data, source_path=path))
             except Exception:
-                # Keep loading other configs. Factory-level validation is also isolated in main.py.
+                # Keep loading other configs. Factory-level validation is also isolated by the DAG entrypoints.
                 LOGGER.exception("Unable to load pipeline config: %s", path)
 
         return configs

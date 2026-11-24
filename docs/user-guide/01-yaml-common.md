@@ -8,7 +8,7 @@
 - **Vine**: 스케줄 없는 DAG. 실제 Grape 작업과 Grape 간 의존성을 정의합니다.
 - **Grape**: Vine 안의 Airflow task 하나. `grape_id`가 task ID가 됩니다.
 
-[main.py](../../dags/main.py)는 `dags/pipelines/roots/*/config.yaml`, `dags/pipelines/vines/*/config.yaml`만 한 단계 깊이로 탐색합니다. `.yml`, 임의 파일명, 더 깊은 폴더는 탐색하지 않습니다. SQL·스키마 상대 경로는 **해당 Vine의 config.yaml 폴더**를 기준으로 하며 폴더 밖으로 나가는 경로는 차단합니다. 폴더명과 DAG ID가 같을 필요는 없지만 일치시키면 관리하기 쉽습니다.
+[Root/Vine DAG 진입점](../root-vine-entrypoints.md)이 사용하는 공용 카탈로그 로더는 `dags/pipelines/roots/*/config.yaml`, `dags/pipelines/vines/*/config.yaml`만 한 단계 깊이로 탐색합니다. `.yml`, 임의 파일명, 더 깊은 폴더는 탐색하지 않습니다. SQL·스키마 상대 경로는 **해당 Vine의 config.yaml 폴더**를 기준으로 하며 폴더 밖으로 나가는 경로는 차단합니다. 폴더명과 DAG ID가 같을 필요는 없지만 일치시키면 관리하기 쉽습니다.
 
 YAML은 `yaml.safe_load`로 읽습니다. 날짜는 `"2026-10-01"`, Jinja는 `"{{ ... }}"`처럼 인용하고, boolean은 **따옴표 없는** `true`/`false`를 사용하세요. `"false"` 문자열은 Python `bool()` 처리 시 참이 될 수 있습니다. 정수 옵션은 코드에서 `int()`로 변환되지만 정상 정수를 쓰는 것이 안전합니다. 필드마다 `get`/`or` 처리 방식이 달라 `null`은 생략과 같지 않습니다. 선택 필드는 필요 없으면 생략하세요. 알 수 없는 키를 모두 거부하는 스키마 검증은 없으므로 오타가 무시될 수 있습니다.
 
